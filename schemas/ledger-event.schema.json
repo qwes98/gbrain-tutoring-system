@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbrain.local/schemas/tutoring-ledger-event-v1.json",
+  "title": "GBrain tutoring ledger event",
+  "type": "object",
+  "required": ["schema_version", "id", "topic", "type", "occurred_at", "data"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "topic": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "type": { "enum": ["concept.declared", "question.asked", "attempt.recorded", "evidence.recorded", "misconception.observed", "misconception.resolved", "review.scheduled", "tutor.action", "event.corrected"] },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "allOf": [{
+    "oneOf": [
+      { "properties": { "type": { "const": "concept.declared" }, "data": { "$ref": "#/$defs/concept" } } },
+      { "properties": { "type": { "const": "question.asked" }, "data": { "$ref": "#/$defs/question" } } },
+      { "properties": { "type": { "const": "attempt.recorded" }, "data": { "$ref": "#/$defs/attempt" } } },
+      { "properties": { "type": { "const": "evidence.recorded" }, "data": { "$ref": "#/$defs/evidence" } } },
+      { "properties": { "type": { "const": "misconception.observed" }, "data": { "$ref": "#/$defs/misconception" } } },
+      { "properties": { "type": { "const": "misconception.resolved" }, "data": { "$ref": "#/$defs/resolution" } } },
+      { "properties": { "type": { "const": "review.scheduled" }, "data": { "$ref": "#/$defs/review" } } },
+      { "properties": { "type": { "const": "tutor.action" }, "data": { "$ref": "#/$defs/action" } } },
+      { "properties": { "type": { "const": "event.corrected" }, "data": { "$ref": "#/$defs/correction" } } }
+    ]
+  }],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "ids": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true },
+    "nonemptyIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" }, "uniqueItems": true },
+    "reasonCodes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "concept": {
+      "type": "object", "required": ["concept_id", "title", "source_refs"],
+      "properties": { "concept_id": { "$ref": "#/$defs/id" }, "title": { "type": "string", "minLength": 1 }, "source_refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true } },
+      "additionalProperties": false
+    },
+    "question": {
+      "type": "object", "required": ["question_id", "concept_id", "prompt", "source_refs"],
+      "properties": { "question_id": { "$ref": "#/$defs/id" }, "concept_id": { "$ref": "#/$defs/id" }, "prompt": { "type": "string", "minLength": 1 }, "source_refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true } },
+      "additionalProperties": false
+    },
+    "attempt": {
+      "type": "object", "required": ["question_id", "concept_id", "answer", "correct", "assistance"],
+      "properties": { "question_id": { "$ref": "#/$defs/id" }, "concept_id": { "$ref": "#/$defs/id" }, "answer": { "type": "string" }, "correct": { "type": "boolean" }, "assistance": { "enum": ["none", "hint", "explanation"] } },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object", "required": ["concept_id", "kind", "summary"],
+      "properties": { "concept_id": { "$ref": "#/$defs/id" }, "kind": { "enum": ["source", "attempt", "observation"] }, "summary": { "type": "string", "minLength": 1 }, "source_ref": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    },
+    "misconception": {
+      "type": "object", "required": ["misconception_id", "concept_id", "description", "evidence_event_ids"],
+      "properties": { "misconception_id": { "$ref": "#/$defs/id" }, "concept_id": { "$ref": "#/$defs/id" }, "description": { "type": "string", "minLength": 1 }, "evidence_event_ids": { "$ref": "#/$defs/nonemptyIds" } },
+      "additionalProperties": false
+    },
+    "resolution": {
+      "type": "object", "required": ["misconception_id", "evidence_event_ids"],
+      "properties": { "misconception_id": { "$ref": "#/$defs/id" }, "evidence_event_ids": { "$ref": "#/$defs/nonemptyIds" } },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object", "required": ["concept_id", "due_at", "reason_event_ids"],
+      "properties": { "concept_id": { "$ref": "#/$defs/id" }, "due_at": { "type": "string", "format": "date-time" }, "reason_event_ids": { "$ref": "#/$defs/nonemptyIds" } },
+      "additionalProperties": false
+    },
+    "action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["action", "concept_id", "question_id", "reason_codes", "evidence_event_ids"],
+          "properties": {
+            "action": { "enum": ["elicit_attempt", "give_hint", "explain_bottleneck", "ask_due_review"] },
+            "concept_id": { "$ref": "#/$defs/id" },
+            "question_id": { "$ref": "#/$defs/id" },
+            "reason_codes": { "$ref": "#/$defs/reasonCodes" },
+            "evidence_event_ids": { "$ref": "#/$defs/ids" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["action", "concept_id", "due_at", "reason_codes", "evidence_event_ids"],
+          "properties": {
+            "action": { "const": "schedule_review" },
+            "concept_id": { "$ref": "#/$defs/id" },
+            "due_at": { "type": "string", "format": "date-time" },
+            "reason_codes": { "$ref": "#/$defs/reasonCodes" },
+            "evidence_event_ids": { "$ref": "#/$defs/ids" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["action", "reason_codes", "evidence_event_ids"],
+          "properties": {
+            "action": { "const": "complete" },
+            "reason_codes": { "$ref": "#/$defs/reasonCodes" },
+            "evidence_event_ids": { "$ref": "#/$defs/ids" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "correction": {
+      "type": "object", "required": ["corrects_event_id", "replacement_data", "reason"],
+      "properties": { "corrects_event_id": { "$ref": "#/$defs/id" }, "replacement_data": { "type": "object" }, "reason": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    }
+  }
+}
