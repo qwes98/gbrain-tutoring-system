@@ -8,6 +8,8 @@ export interface AtomicWriteOptions {
   containmentRoot?: string;
   afterParentOpen?: () => void;
   afterTempFsync?: (temporaryPath: string) => void;
+  afterTargetProbe?: (targetPath: string) => void;
+  afterExchange?: (targetPath: string) => void;
 }
 
 const openLibc = () => dlopen("libc.so.6", {
@@ -21,6 +23,7 @@ function nativeStorage(): ReturnType<typeof openLibc> {
 }
 const AT_EMPTY_PATH = 0x1000;
 const RENAME_EXCHANGE = 2;
+const PUBLICATION_ATTEMPTS = 8;
 
 function pathMatchesDescriptor(parent: ReturnType<typeof openAnchoredDirectory>, name: string, descriptor: number): boolean {
   let candidate: number;
@@ -49,6 +52,12 @@ function removeNameIfOwned(parent: ReturnType<typeof openAnchoredDirectory>, nam
   }
   if (pathMatchesDescriptor(parent, claimName, descriptor)) unlinkSync(parent.child(claimName));
   else restoreMovedReplacement(parent, name, claimName);
+}
+
+function unlinkPrivateName(parent: ReturnType<typeof openAnchoredDirectory>, name: string): void {
+  try { unlinkSync(parent.child(name)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 export function fsyncDirectory(path: string): void {
@@ -92,32 +101,49 @@ export function atomicWriteText(path: string, content: string, options: AtomicWr
     options.afterTempFsync?.(parent.child(temporaryName));
     if (!pathMatchesDescriptor(parent, temporaryName, descriptor)) throw new Error(`atomic temporary file was replaced: ${absolute}`);
 
-    try { previousTarget = openSync(parent.child(name), constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    if (previousTarget !== null && !fstatSync(previousTarget).isFile()) {
-      throw new Error(`atomic target is not a regular file: ${absolute}`);
-    }
-    if (previousTarget === null) {
-      if (nativeStorage().symbols.linkat(descriptor, "", parent.descriptor, name, AT_EMPTY_PATH) !== 0) {
-        throw new Error(`atomic target changed during publication: ${absolute}`);
+    for (let attempt = 0; ; attempt += 1) {
+      const retryable = attempt < PUBLICATION_ATTEMPTS;
+      try { previousTarget = openSync(parent.child(name), constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        previousTarget = null;
       }
-    } else {
+      if (previousTarget !== null && !fstatSync(previousTarget).isFile()) {
+        throw new Error(`atomic target is not a regular file: ${absolute}`);
+      }
+      options.afterTargetProbe?.(parent.child(name));
+      if (previousTarget === null) {
+        if (nativeStorage().symbols.linkat(descriptor, "", parent.descriptor, name, AT_EMPTY_PATH) === 0) break;
+        if (!retryable) throw new Error(`atomic target changed during publication: ${absolute}`);
+        continue;
+      }
       publicationName = `.publish-${crypto.randomUUID()}`;
       if (nativeStorage().symbols.linkat(descriptor, "", parent.descriptor, publicationName, AT_EMPTY_PATH) !== 0) {
         throw new Error(`failed to stage atomic publication: ${absolute}`);
       }
       if (nativeStorage().symbols.renameat2(parent.descriptor, publicationName, parent.descriptor, name, RENAME_EXCHANGE) !== 0) {
-        throw new Error(`atomic target changed during publication: ${absolute}`);
+        unlinkPrivateName(parent, publicationName);
+        publicationName = null;
+        closeSync(previousTarget);
+        previousTarget = null;
+        if (!retryable) throw new Error(`atomic target changed during publication: ${absolute}`);
+        continue;
       }
+      options.afterExchange?.(parent.child(name));
       if (!pathMatchesDescriptor(parent, name, descriptor)) {
         if (pathMatchesDescriptor(parent, publicationName, previousTarget)) {
           nativeStorage().symbols.renameat2(parent.descriptor, publicationName, parent.descriptor, name, RENAME_EXCHANGE);
         }
-        throw new Error(`atomic publication was replaced: ${absolute}`);
+        unlinkPrivateName(parent, publicationName);
+        publicationName = null;
+        closeSync(previousTarget);
+        previousTarget = null;
+        if (!retryable) throw new Error(`atomic publication was replaced: ${absolute}`);
+        continue;
       }
       removeNameIfOwned(parent, publicationName, previousTarget);
+      unlinkPrivateName(parent, publicationName);
       publicationName = null;
+      break;
     }
     removeNameIfOwned(parent, temporaryName, descriptor);
     parent.fsync();

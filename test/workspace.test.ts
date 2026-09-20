@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createProject, createTopic } from "../src/workspace.ts";
 import { atomicWriteText } from "../src/atomic-file.ts";
 import { appendEvent } from "../src/ledger.ts";
+import { projectEvents } from "../src/projection.ts";
 
 describe("workspace generator", () => {
   const roots: string[] = [];
@@ -228,6 +229,66 @@ describe("workspace generator", () => {
     expect(readFileSync(target, "utf8")).toBe("original bytes\n");
     expect(readFileSync(outside, "utf8")).toBe("outside bytes\n");
   });
+
+  test("publishes its own bytes when a competing writer replaces the target mid-publication", () => {
+    const root = mkdtempSync(join(tmpdir(), "gbrain-tutor-atomic-target-race-"));
+    roots.push(root);
+    const directory = join(root, "projections");
+    const target = join(directory, "current.json");
+    mkdirSync(directory);
+    writeFileSync(target, "original bytes\n");
+    let probes = 0;
+    let exchanges = 0;
+
+    atomicWriteText(target, "intended bytes\n", {
+      containmentRoot: directory,
+      afterTargetProbe: () => {
+        probes += 1;
+      },
+      afterExchange: (targetPath) => {
+        exchanges += 1;
+        if (exchanges !== 1) return;
+        rmSync(targetPath, { force: true });
+        writeFileSync(targetPath, "competing bytes\n");
+      },
+    });
+
+    expect(probes).toBeGreaterThan(1);
+    expect(exchanges).toBeGreaterThan(1);
+    expect(readFileSync(target, "utf8")).toBe("intended bytes\n");
+    expect(readdirSync(directory).sort()).toEqual(["current.json"]);
+  });
+
+  test("leaves no publication residue when concurrent writer processes publish the same projection files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "gbrain-tutor-atomic-residue-"));
+    roots.push(root);
+    const first = join(root, "first.json");
+    const second = join(root, "second.json");
+    const projection = (asOf: string, conceptId: string) => JSON.stringify(projectEvents([
+      {
+        schema_version: 1,
+        id: `concept-${conceptId}`,
+        topic: "residue",
+        type: "concept.declared",
+        occurred_at: "2026-01-01T00:00:00Z",
+        data: { concept_id: conceptId, title: conceptId, source_refs: ["sources/book.md"] },
+      },
+    ], { asOf }));
+    writeFileSync(first, projection("2026-01-02T00:00:00.000Z", "a"));
+    writeFileSync(second, projection("2026-01-03T00:00:00.000Z", "b"));
+    const worker = join(import.meta.dir, "fixtures", "projection-writer.ts");
+
+    const children = Array.from({ length: 8 }, (_, index) => Bun.spawn([
+      process.execPath, worker, root, index % 2 === 0 ? first : second, "publish",
+    ], { stdout: "pipe", stderr: "pipe" }));
+    expect(await Promise.all(children.map((child) => child.exited))).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+
+    const residue = (directory: string): string[] => readdirSync(directory, { withFileTypes: true })
+      .flatMap((entry) => (entry.isDirectory()
+        ? residue(join(directory, entry.name))
+        : (entry.name.startsWith(".") || entry.name.includes(".tmp.") ? [join(directory, entry.name)] : [])));
+    expect(residue(join(root, "projections"))).toEqual([]);
+  }, 20_000);
 
   test("refuses to exchange an atomic file with an existing directory", () => {
     const root = mkdtempSync(join(tmpdir(), "gbrain-tutor-atomic-directory-target-"));
