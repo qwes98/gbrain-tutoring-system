@@ -4,7 +4,7 @@ description: Select and record one evidence-based tutoring action.
 version: 0.1.0
 author: GBrain Tutoring System contributors
 license: MIT
-platforms: [linux, macos]
+platforms: [linux]
 metadata:
   hermes:
     tags: [gbrain, tutoring, ledger, review]

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { atomicWriteText, fsyncDirectory } from "./atomic-file.ts";
-import { compareRfc3339Instants, isRfc3339DateTime } from "./json-schema.ts";
+import { compareRfc3339EventOrder, compareRfc3339Instants, isRfc3339DateTime } from "./json-schema.ts";
 import { assertEvent } from "./schema.ts";
 import type { Assistance, LedgerEvent } from "./types.ts";
 
@@ -83,12 +83,99 @@ interface ProjectionWriteHooks {
   beforePublish?: () => void;
 }
 
+interface EffectiveEvent {
+  event: LedgerEvent;
+  evidenceId: string;
+  evidenceOccurredAt: string;
+}
+
 function pushUnique(values: string[], ...added: string[]): void {
   for (const value of added) if (!values.includes(value)) values.push(value);
 }
 
+function orderEffectiveEvents(items: EffectiveEvent[]): EffectiveEvent[] {
+  const byEvidenceId = new Map<string, EffectiveEvent>();
+  const concepts = new Map<string, EffectiveEvent>();
+  const questions = new Map<string, EffectiveEvent>();
+  const misconceptions = new Map<string, EffectiveEvent>();
+  const questionsByConcept = new Map<string, EffectiveEvent[]>();
+  for (const item of [...items].sort((left, right) => left.event.id.localeCompare(right.event.id))) {
+    const data = item.event.data as Record<string, unknown>;
+    byEvidenceId.set(item.event.id, item);
+    byEvidenceId.set(item.evidenceId, item);
+    if (item.event.type === "concept.declared") concepts.set(data.concept_id as string, item);
+    if (item.event.type === "question.asked") {
+      questions.set(data.question_id as string, item);
+      const conceptId = data.concept_id as string;
+      questionsByConcept.set(conceptId, [...questionsByConcept.get(conceptId) ?? [], item]);
+    }
+    if (item.event.type === "misconception.observed") misconceptions.set(data.misconception_id as string, item);
+  }
+  const dependencies = new Map<string, Set<string>>();
+  for (const item of items) {
+    const data = item.event.data as Record<string, unknown>;
+    const ids = new Set<string>();
+    const assertNotAfter = (kind: string, id: string, dependency: EffectiveEvent | undefined): void => {
+      if (dependency && compareRfc3339Instants(dependency.event.occurred_at, item.event.occurred_at) > 0) {
+        throw new Error(`${kind} ${id} occurs after dependent event ${item.event.id}`);
+      }
+    };
+    const add = (dependency: EffectiveEvent | undefined): void => {
+      if (dependency && dependency.event.id !== item.event.id) ids.add(dependency.event.id);
+    };
+    if (item.event.type !== "concept.declared" && typeof data.concept_id === "string") {
+      const dependency = concepts.get(data.concept_id);
+      assertNotAfter("concept", data.concept_id, dependency);
+      add(dependency);
+    }
+    if (typeof data.question_id === "string") {
+      const dependency = questions.get(data.question_id);
+      assertNotAfter("question", data.question_id, dependency);
+      add(dependency);
+    }
+    if (item.event.type === "misconception.resolved" && typeof data.misconception_id === "string") {
+      const dependency = misconceptions.get(data.misconception_id);
+      assertNotAfter("misconception", data.misconception_id, dependency);
+      add(dependency);
+    }
+    for (const field of ["evidence_event_ids", "reason_event_ids"] as const) {
+      if (Array.isArray(data[field])) for (const id of data[field] as string[]) add(byEvidenceId.get(id));
+    }
+    if (item.event.type === "review.scheduled" && typeof data.concept_id === "string") {
+      for (const question of questionsByConcept.get(data.concept_id) ?? []) add(question);
+    }
+    dependencies.set(item.event.id, ids);
+  }
+
+  const chronological = [...items].sort((left, right) => compareRfc3339EventOrder(
+    left.event.occurred_at,
+    left.event.id,
+    right.event.occurred_at,
+    right.event.id,
+  ));
+  const ordered: EffectiveEvent[] = [];
+  for (let start = 0; start < chronological.length;) {
+    let end = start + 1;
+    while (end < chronological.length && compareRfc3339Instants(
+      chronological[start]!.event.occurred_at,
+      chronological[end]!.event.occurred_at,
+    ) === 0) end += 1;
+    const pending = new Map(chronological.slice(start, end).map((item) => [item.event.id, item]));
+    while (pending.size > 0) {
+      const ready = [...pending.values()]
+        .filter((item) => [...dependencies.get(item.event.id) ?? []].every((id) => !pending.has(id)))
+        .sort((left, right) => left.event.id.localeCompare(right.event.id))[0];
+      if (!ready) throw new Error(`cyclic same-instant event dependencies: ${[...pending.keys()].sort().join(", ")}`);
+      ordered.push(ready);
+      pending.delete(ready.event.id);
+    }
+    start = end;
+  }
+  return ordered;
+}
+
 function effectiveEvents(events: LedgerEvent[]): {
-  events: Array<{ event: LedgerEvent; evidenceId: string; evidenceOccurredAt: string }>;
+  events: EffectiveEvent[];
   corrections: Array<{ correction_event_id: string; corrected_event_id: string }>;
 } {
   const known = new Map<string, LedgerEvent>();
@@ -97,6 +184,8 @@ function effectiveEvents(events: LedgerEvent[]): {
     assertEvent(event);
     if (known.has(event.id)) throw new Error(`duplicate event id during replay: ${event.id}`);
     known.set(event.id, event);
+  }
+  for (const event of events) {
     if (event.type === "event.corrected") {
       const data = event.data as { corrects_event_id: string; replacement_data: Record<string, unknown> };
       const target = known.get(data.corrects_event_id);
@@ -111,16 +200,17 @@ function effectiveEvents(events: LedgerEvent[]): {
       }
     }
   }
-  const effective = events.filter((event) => event.type !== "event.corrected").map((event) => {
-    const replacement = replacements.get(event.id);
-    return replacement
-      ? { event: { ...event, data: replacement.data }, evidenceId: replacement.evidenceId, evidenceOccurredAt: replacement.evidenceOccurredAt }
-      : { event, evidenceId: event.id, evidenceOccurredAt: event.occurred_at };
-  });
+  const effective = events.filter((event) => event.type !== "event.corrected")
+    .map((event) => {
+      const replacement = replacements.get(event.id);
+      return replacement
+        ? { event: { ...event, data: replacement.data }, evidenceId: replacement.evidenceId, evidenceOccurredAt: replacement.evidenceOccurredAt }
+        : { event, evidenceId: event.id, evidenceOccurredAt: event.occurred_at };
+    });
   const corrections = [...replacements.entries()]
     .map(([corrected_event_id, replacement]) => ({ correction_event_id: replacement.evidenceId, corrected_event_id }))
     .sort((left, right) => left.corrected_event_id.localeCompare(right.corrected_event_id) || left.correction_event_id.localeCompare(right.correction_event_id));
-  return { events: effective, corrections };
+  return { events: orderEffectiveEvents(effective), corrections };
 }
 
 export function projectEvents(events: LedgerEvent[], options: { asOf: string }): TopicProjection {
@@ -277,7 +367,7 @@ export function projectEvents(events: LedgerEvent[], options: { asOf: string }):
       const attempt = question.attempts.filter((candidate) => candidate.correct && candidate.assistance === "none").at(-1);
       return attempt ? [attempt] : [];
     })
-    .sort((left, right) => left.occurred_at.localeCompare(right.occurred_at) || left.event_id.localeCompare(right.event_id));
+    .sort((left, right) => compareRfc3339EventOrder(left.occurred_at, left.event_id, right.occurred_at, right.event_id));
 
   for (const concept of concepts.values()) {
     const qualifying = qualifyingAttempts(concept.concept_id);
@@ -292,6 +382,7 @@ export function projectEvents(events: LedgerEvent[], options: { asOf: string }):
   const reviewHistory = reviews.map((review) => {
     const completion = [...questions.values()].filter((question) => question.concept_id === review.concept_id)
       .flatMap((question) => question.attempts)
+      .sort((left, right) => compareRfc3339EventOrder(left.occurred_at, left.event_id, right.occurred_at, right.event_id))
       .find((attempt) => attempt.correct && attempt.assistance === "none" && compareRfc3339Instants(attempt.occurred_at, review.due_at) >= 0);
     return completion ? { ...review, status: "completed" as const, completion_event_id: completion.event_id } : review;
   }).sort((left, right) => compareRfc3339Instants(left.due_at, right.due_at)

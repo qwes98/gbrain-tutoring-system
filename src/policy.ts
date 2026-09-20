@@ -58,7 +58,8 @@ export function selectTutorAction(state: TopicProjection): TutorDecision {
       const data = event.data as Record<string, unknown>;
       return data.action === "give_hint"
         && data.question_id === needsHint.question_id
-        && compareRfc3339Instants(event.occurred_at, latestAttempt.occurred_at) >= 0;
+        && Array.isArray(data.evidence_event_ids)
+        && data.evidence_event_ids.includes(latestAttempt.event_id);
     });
     if (priorHint) {
       return {

@@ -117,6 +117,27 @@ describe("rule-based tutor policy", () => {
     expect(decision.evidence_event_ids).toEqual(["wrong", "hint-action"]);
   });
 
+  test("escalates when a same-instant hint causally cites an attempt with a higher event id", () => {
+    const occurredAt = "2026-01-01T00:02:00.123456789Z";
+    const state = projectEvents([
+      event("c", "concept.declared", { concept_id: "mutex", title: "Mutex", source_refs: ["sources/lecture.md#mutex"] }, 0),
+      event("q", "question.asked", { question_id: "q", concept_id: "mutex", prompt: "What does a mutex protect?", source_refs: ["sources/lecture.md#mutex"] }, 1),
+      { ...event("z-attempt", "attempt.recorded", { question_id: "q", concept_id: "mutex", answer: "the CPU", correct: false, assistance: "none" }, 2), occurred_at: occurredAt },
+      { ...event("a-hint", "tutor.action", {
+        action: "give_hint",
+        concept_id: "mutex",
+        question_id: "q",
+        reason_codes: ["minimal_assistance", "single_bottleneck"],
+        evidence_event_ids: ["z-attempt"],
+      }, 2), occurred_at: occurredAt },
+    ], { asOf: "2026-01-01T01:00:00Z" });
+
+    expect(selectTutorAction(state)).toMatchObject({
+      action: "explain_bottleneck",
+      evidence_event_ids: ["z-attempt", "a-hint"],
+    });
+  });
+
   test("explains only after evidence shows a hint was insufficient", () => {
     const state = projectEvents([
       event("c", "concept.declared", { concept_id: "mutex", title: "Mutex", source_refs: ["sources/lecture.md#mutex"] }, 0),

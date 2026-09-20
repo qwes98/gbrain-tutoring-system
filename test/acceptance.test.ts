@@ -20,6 +20,8 @@ describe("v0.1 CLI acceptance", () => {
       return JSON.parse(stdout) as Record<string, unknown>;
     };
 
+    expect((await run("doctor")).checks).toMatchObject({ storage: true });
+
     await run("init", workspace);
     await run("topic", "init", workspace, "concurrency", "--title", "Concurrency Control", "--source", source);
     const topic = join(workspace, "topics", "concurrency");

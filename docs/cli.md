@@ -27,4 +27,4 @@ Event commands accept optional `--id` and `--at`; generated IDs and wall-clock t
 - `schedule-review TOPIC_DIR --concept ID --due RFC3339 --reason-event EVENT_ID... [--at RFC3339]` requires a future due time during replay.
 - `project TOPIC_DIR [--as-of RFC3339]` rebuilds every projection from the ledger. It publishes a complete generation and atomically updates `projections/current.json`; resolve files through that manifest.
 - `export-gbrain TOPIC_DIR [--as-of RFC3339]` writes `exports/gbrain-promotion-candidates.json` without changing GBrain.
-- `doctor [--skill SKILL.md]` checks Bun, the event validator, and the delivered Hermes skill path.
+- `doctor [--skill SKILL.md]` checks Bun, probes Linux procfs plus the required kernel-backed atomic-write and ledger-lock operations in a temporary directory, validates a sample event, and checks the delivered Hermes skill path.

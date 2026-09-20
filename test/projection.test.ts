@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { selectTutorAction } from "../src/policy.ts";
 import { projectEvents, writeProjections } from "../src/projection.ts";
 import type { TopicProjection } from "../src/projection.ts";
 import type { LedgerEvent } from "../src/types.ts";
@@ -16,6 +17,60 @@ const event = (id: string, type: LedgerEvent["type"], data: Record<string, unkno
 });
 
 describe("deterministic projections", () => {
+  test("orders attempt semantics by exact instant and event id instead of append position", () => {
+    const declarations = [
+      { ...event("c", "concept.declared", { concept_id: "ordering", title: "Ordering", source_refs: ["sources/book.md#ordering"] }, 0), occurred_at: "2026-01-01T00:00:00Z" },
+      { ...event("q1", "question.asked", { question_id: "q1", concept_id: "ordering", prompt: "First", source_refs: ["sources/book.md#ordering"] }, 1), occurred_at: "2026-01-01T00:00:00.1Z" },
+      { ...event("q2", "question.asked", { question_id: "q2", concept_id: "ordering", prompt: "Second", source_refs: ["sources/book.md#ordering"] }, 2), occurred_at: "2026-01-01T00:00:00.2Z" },
+    ];
+    const earlierCorrect = { ...event("a-correct", "attempt.recorded", { question_id: "q1", concept_id: "ordering", answer: "earlier", correct: true, assistance: "none" }, 3), occurred_at: "2026-01-01T00:00:00.3000000001Z" };
+    const otherCorrect = { ...event("b-correct", "attempt.recorded", { question_id: "q2", concept_id: "ordering", answer: "other", correct: true, assistance: "none" }, 3), occurred_at: "2026-01-01T00:00:00.3000000002Z" };
+    const tiedCorrect = { ...event("m-correct", "attempt.recorded", { question_id: "q1", concept_id: "ordering", answer: "tie first", correct: true, assistance: "none" }, 3), occurred_at: "2026-01-01T00:00:00.3000000003Z" };
+    const tiedWrong = { ...event("z-wrong", "attempt.recorded", { question_id: "q1", concept_id: "ordering", answer: "tie last", correct: false, assistance: "none" }, 3), occurred_at: "2026-01-01T00:00:00.3000000003Z" };
+    const chronological = [...declarations, earlierCorrect, otherCorrect, tiedCorrect, tiedWrong];
+    const reordered = [...declarations, tiedWrong, tiedCorrect, otherCorrect, earlierCorrect];
+
+    const expected = projectEvents(chronological, { asOf: "2026-01-01T00:00:01Z" });
+    const actual = projectEvents(reordered, { asOf: "2026-01-01T00:00:01Z" });
+
+    expect(actual).toEqual(expected);
+    expect(actual.questions.find((question) => question.question_id === "q1")?.attempts.map((attempt) => attempt.event_id))
+      .toEqual(["a-correct", "m-correct", "z-wrong"]);
+    expect(actual.concepts[0]?.status).toBe("developing");
+    expect(actual.promotion_candidates).toHaveLength(0);
+    expect(selectTutorAction(actual)).toMatchObject({ action: "give_hint", evidence_event_ids: ["z-wrong"] });
+  });
+
+  test("preserves same-instant causal dependencies before applying event-id ties", () => {
+    const occurredAt = "2026-01-01T00:00:00.123456789Z";
+    const events: LedgerEvent[] = [
+      { schema_version: 1, id: "z-concept", topic: "systems", type: "concept.declared", occurred_at: occurredAt, data: { concept_id: "causal", title: "Causal", source_refs: ["sources/book.md"] } },
+      { schema_version: 1, id: "a-question", topic: "systems", type: "question.asked", occurred_at: occurredAt, data: { question_id: "q", concept_id: "causal", prompt: "Why?", source_refs: ["sources/book.md"] } },
+      { schema_version: 1, id: "z-attempt", topic: "systems", type: "attempt.recorded", occurred_at: occurredAt, data: { question_id: "q", concept_id: "causal", answer: "wrong", correct: false, assistance: "none" } },
+      { schema_version: 1, id: "a-action", topic: "systems", type: "tutor.action", occurred_at: occurredAt, data: { action: "give_hint", concept_id: "causal", question_id: "q", reason_codes: ["minimal_assistance"], evidence_event_ids: ["z-attempt"] } },
+    ];
+
+    const state = projectEvents(events, { asOf: "2026-01-01T00:00:01Z" });
+
+    expect(state.questions[0]?.attempts.map((attempt) => attempt.event_id)).toEqual(["z-attempt"]);
+    expect(state.tutor_actions.map((action) => action.id)).toEqual(["a-action"]);
+  });
+
+  test("uses the earliest exact-instant attempt across questions to complete a review", () => {
+    const events: LedgerEvent[] = [
+      { schema_version: 1, id: "c", topic: "systems", type: "concept.declared", occurred_at: "2026-01-01T00:00:00Z", data: { concept_id: "review", title: "Review", source_refs: ["sources/book.md"] } },
+      { schema_version: 1, id: "q1", topic: "systems", type: "question.asked", occurred_at: "2026-01-01T00:00:00.1Z", data: { question_id: "q1", concept_id: "review", prompt: "One", source_refs: ["sources/book.md"] } },
+      { schema_version: 1, id: "q2", topic: "systems", type: "question.asked", occurred_at: "2026-01-01T00:00:00.2Z", data: { question_id: "q2", concept_id: "review", prompt: "Two", source_refs: ["sources/book.md"] } },
+      { schema_version: 1, id: "scheduled", topic: "systems", type: "review.scheduled", occurred_at: "2026-01-01T00:00:00.3Z", data: { concept_id: "review", due_at: "2026-01-01T00:00:01Z", reason_event_ids: ["q1"] } },
+      { schema_version: 1, id: "q2-earlier", topic: "systems", type: "attempt.recorded", occurred_at: "2026-01-01T00:00:01.0000000001Z", data: { question_id: "q2", concept_id: "review", answer: "earlier", correct: true, assistance: "none" } },
+      { schema_version: 1, id: "q1-later", topic: "systems", type: "attempt.recorded", occurred_at: "2026-01-01T00:00:01.0000000002Z", data: { question_id: "q1", concept_id: "review", answer: "later", correct: true, assistance: "none" } },
+    ];
+
+    const state = projectEvents(events, { asOf: "2026-01-01T00:00:02Z" });
+
+    expect(state.review_history[0]).toMatchObject({ status: "completed", completion_event_id: "q2-earlier" });
+  });
+
   test("rejects semantically invalid RFC 3339 projection timestamps", () => {
     expect(() => projectEvents([], { asOf: "2026-02-30T00:00:00Z" })).toThrow("invalid projection asOf");
     expect(() => projectEvents([], { asOf: "2026-01-01T24:00:00Z" })).toThrow("invalid projection asOf");

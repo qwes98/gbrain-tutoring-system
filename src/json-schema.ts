@@ -33,6 +33,10 @@ export function compareRfc3339Instants(left: string, right: string): number {
   return leftFraction === rightFraction ? 0 : leftFraction < rightFraction ? -1 : 1;
 }
 
+export function compareRfc3339EventOrder(leftAt: string, leftId: string, rightAt: string, rightId: string): number {
+  return compareRfc3339Instants(leftAt, rightAt) || leftId.localeCompare(rightId);
+}
+
 export function rfc3339InstantKey(value: string): string {
   const parts = instantParts(value);
   return `${parts.epochSecond}:${parts.fraction || "0"}`;

@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { atomicWriteText } from "./atomic-file.ts";
-import { appendEvent, readLedger } from "./ledger.ts";
+import { appendEvent, readLedger, transactLedger } from "./ledger.ts";
 import { selectTutorAction } from "./policy.ts";
 import { projectEvents, writeProjections } from "./projection.ts";
 import { validateEvent } from "./schema.ts";
@@ -81,6 +82,31 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+async function checkStorageCapabilities(): Promise<boolean> {
+  if (process.platform !== "linux" || !existsSync("/proc/self/fd")) return false;
+  const root = mkdtempSync(join(tmpdir(), "gbrain-tutor-doctor-"));
+  try {
+    const atomicPath = join(root, "atomic.json");
+    atomicWriteText(atomicPath, "first\n", { containmentRoot: root });
+    atomicWriteText(atomicPath, "second\n", { containmentRoot: root });
+    if (readFileSync(atomicPath, "utf8") !== "second\n") return false;
+    const ledger = join(root, "ledger", "events.jsonl");
+    await appendEvent(ledger, {
+      schema_version: 1,
+      id: "doctor-storage",
+      topic: "doctor",
+      type: "concept.declared",
+      occurred_at: "2026-01-01T00:00:00Z",
+      data: { concept_id: "doctor", title: "Doctor", source_refs: ["doctor"] },
+    });
+    return readLedger(ledger).events.length === 1;
+  } catch {
+    return false;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function appendFromRecord(kind: string, topicDir: string, parsed: Parsed): Promise<LedgerEvent> {
   let event: LedgerEvent;
   if (kind === "concept") {
@@ -143,11 +169,13 @@ async function main(args: string[]): Promise<void> {
     if (!topicArg) throw new Error("usage: gbrain-tutor next TOPIC_DIR [--at RFC3339]");
     const topicDir = resolve(topicArg);
     const at = optional(parsed, "at", new Date().toISOString())!;
-    const state = projectEvents(readLedger(ledgerPath(topicDir)).events, { asOf: at });
-    const decision = selectTutorAction(state);
-    const actionEvent = eventFrom(topicDir, parsed, "tutor.action", decision as unknown as Record<string, unknown>);
-    await appendEvent(ledgerPath(topicDir), actionEvent);
-    const updated = projectEvents(readLedger(ledgerPath(topicDir)).events, { asOf: at });
+    const { state, decision, actionEvent, updated } = await transactLedger(ledgerPath(topicDir), (events) => {
+      const state = projectEvents([...events], { asOf: at });
+      const decision = selectTutorAction(state);
+      const actionEvent = eventFrom(topicDir, parsed, "tutor.action", decision as unknown as Record<string, unknown>);
+      const updated = projectEvents([...events, actionEvent], { asOf: at });
+      return { event: actionEvent, value: { state, decision, actionEvent, updated } };
+    });
     writeProjections(topicDir, updated);
     const concept = decision.concept_id ? state.concepts.find((candidate) => candidate.concept_id === decision.concept_id) : undefined;
     const question = decision.question_id ? state.questions.find((candidate) => candidate.question_id === decision.question_id) : undefined;
@@ -183,7 +211,12 @@ async function main(args: string[]): Promise<void> {
   } else if (command === "doctor") {
     const skill = resolve(optional(parsed, "skill", join(import.meta.dir, "..", "skills", "gbrain-tutor", "SKILL.md"))!);
     const sample = validateEvent({ schema_version: 1, id: "doctor", topic: "doctor", type: "evidence.recorded", occurred_at: "2026-01-01T00:00:00.000Z", data: { concept_id: "doctor", kind: "observation", summary: "schema probe" } });
-    const checks = { bun: typeof Bun.version === "string", schema: sample.valid, skill: existsSync(skill) && readFileSync(skill, "utf8").startsWith("---\n") };
+    const checks = {
+      bun: typeof Bun.version === "string",
+      storage: await checkStorageCapabilities(),
+      schema: sample.valid,
+      skill: existsSync(skill) && readFileSync(skill, "utf8").startsWith("---\n"),
+    };
     print({ schema_version: 1, ok: Object.values(checks).every(Boolean), checks, skill });
     if (!Object.values(checks).every(Boolean)) process.exitCode = 1;
   } else {

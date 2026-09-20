@@ -1,46 +1,133 @@
-import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
-import { assertContainedPath } from "./path-safety.ts";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
+import { dlopen } from "bun:ffi";
+import { openAnchoredDirectory } from "./anchored-fs.ts";
+import { assertLexicallyContainedPath } from "./path-safety.ts";
 
-export interface AtomicWriteOptions { containmentRoot?: string; }
+export interface AtomicWriteOptions {
+  containmentRoot?: string;
+  afterParentOpen?: () => void;
+  afterTempFsync?: (temporaryPath: string) => void;
+}
+
+const openLibc = () => dlopen("libc.so.6", {
+  linkat: { args: ["i32", "cstring", "i32", "cstring", "i32"], returns: "i32" } as const,
+  renameat2: { args: ["i32", "cstring", "i32", "cstring", "u32"], returns: "i32" } as const,
+});
+let libc: ReturnType<typeof openLibc> | null = null;
+function nativeStorage(): ReturnType<typeof openLibc> {
+  if (process.platform !== "linux") throw new Error("descriptor-anchored storage requires Linux procfs");
+  return libc ??= openLibc();
+}
+const AT_EMPTY_PATH = 0x1000;
+const RENAME_EXCHANGE = 2;
+
+function pathMatchesDescriptor(parent: ReturnType<typeof openAnchoredDirectory>, name: string, descriptor: number): boolean {
+  let candidate: number;
+  try { candidate = openSync(parent.child(name), constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return false; }
+  try {
+    const expected = fstatSync(descriptor, { bigint: true });
+    const actual = fstatSync(candidate, { bigint: true });
+    return expected.dev === actual.dev && expected.ino === actual.ino;
+  } finally { closeSync(candidate); }
+}
+
+function restoreMovedReplacement(parent: ReturnType<typeof openAnchoredDirectory>, originalName: string, claimName: string): void {
+  try {
+    linkSync(parent.child(claimName), parent.child(originalName));
+    unlinkSync(parent.child(claimName));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+}
+
+function removeNameIfOwned(parent: ReturnType<typeof openAnchoredDirectory>, name: string, descriptor: number): void {
+  const claimName = `.cleanup-${crypto.randomUUID()}`;
+  try { renameSync(parent.child(name), parent.child(claimName)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (pathMatchesDescriptor(parent, claimName, descriptor)) unlinkSync(parent.child(claimName));
+  else restoreMovedReplacement(parent, name, claimName);
+}
 
 export function fsyncDirectory(path: string): void {
-  let directory: number;
+  let directory;
   try {
-    directory = openSync(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+    directory = openAnchoredDirectory(path);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (process.platform === "win32" || code === "EINVAL" || code === "ENOTSUP") return;
     throw error;
   }
-  try { fsyncSync(directory); } finally { closeSync(directory); }
+  try { directory.fsync(); } finally { directory.close(); }
 }
 
 export function atomicWriteText(path: string, content: string, options: AtomicWriteOptions = {}): void {
-  const containmentRoot = options.containmentRoot ?? dirname(path);
-  assertContainedPath(containmentRoot, path);
-  mkdirSync(dirname(path), { recursive: true });
-  assertContainedPath(containmentRoot, path);
-  const temporary = `${path}.tmp.${process.pid}.${crypto.randomUUID()}`;
-  assertContainedPath(containmentRoot, temporary);
+  const absolute = resolve(path);
+  const containmentRoot = options.containmentRoot ?? dirname(absolute);
+  assertLexicallyContainedPath(containmentRoot, absolute);
+  const parent = openAnchoredDirectory(dirname(absolute), { create: true });
+  const name = basename(absolute);
+  const temporaryName = `${name}.tmp.${process.pid}.${crypto.randomUUID()}`;
+  let descriptor: number | null = null;
+  let previousTarget: number | null = null;
+  let publicationName: string | null = null;
   try {
-    const descriptor = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o644);
+    options.afterParentOpen?.();
     try {
-      const bytes = Buffer.from(content);
-      let offset = 0;
-      while (offset < bytes.length) {
-        const written = writeSync(descriptor, bytes, offset, bytes.length - offset);
-        if (written <= 0) throw new Error(`short write at offset ${offset}/${bytes.length}`);
-        offset += written;
-      }
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
+      if (lstatSync(parent.child(name)).isSymbolicLink()) throw new Error(`path traverses symbolic link: ${absolute}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    renameSync(temporary, path);
-    fsyncDirectory(dirname(path));
+    descriptor = openSync(parent.child(temporaryName), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o644);
+    const bytes = Buffer.from(content);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(descriptor, bytes, offset, bytes.length - offset);
+      if (written <= 0) throw new Error(`short write at offset ${offset}/${bytes.length}`);
+      offset += written;
+    }
+    fsyncSync(descriptor);
+    options.afterTempFsync?.(parent.child(temporaryName));
+    if (!pathMatchesDescriptor(parent, temporaryName, descriptor)) throw new Error(`atomic temporary file was replaced: ${absolute}`);
+
+    try { previousTarget = openSync(parent.child(name), constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (previousTarget !== null && !fstatSync(previousTarget).isFile()) {
+      throw new Error(`atomic target is not a regular file: ${absolute}`);
+    }
+    if (previousTarget === null) {
+      if (nativeStorage().symbols.linkat(descriptor, "", parent.descriptor, name, AT_EMPTY_PATH) !== 0) {
+        throw new Error(`atomic target changed during publication: ${absolute}`);
+      }
+    } else {
+      publicationName = `.publish-${crypto.randomUUID()}`;
+      if (nativeStorage().symbols.linkat(descriptor, "", parent.descriptor, publicationName, AT_EMPTY_PATH) !== 0) {
+        throw new Error(`failed to stage atomic publication: ${absolute}`);
+      }
+      if (nativeStorage().symbols.renameat2(parent.descriptor, publicationName, parent.descriptor, name, RENAME_EXCHANGE) !== 0) {
+        throw new Error(`atomic target changed during publication: ${absolute}`);
+      }
+      if (!pathMatchesDescriptor(parent, name, descriptor)) {
+        if (pathMatchesDescriptor(parent, publicationName, previousTarget)) {
+          nativeStorage().symbols.renameat2(parent.descriptor, publicationName, parent.descriptor, name, RENAME_EXCHANGE);
+        }
+        throw new Error(`atomic publication was replaced: ${absolute}`);
+      }
+      removeNameIfOwned(parent, publicationName, previousTarget);
+      publicationName = null;
+    }
+    removeNameIfOwned(parent, temporaryName, descriptor);
+    parent.fsync();
   } catch (error) {
-    try { if (existsSync(temporary)) unlinkSync(temporary); } catch { /* best-effort cleanup */ }
+    try { if (descriptor !== null) removeNameIfOwned(parent, temporaryName, descriptor); } catch { /* best-effort cleanup */ }
+    try { if (publicationName !== null && descriptor !== null) removeNameIfOwned(parent, publicationName, descriptor); } catch { /* best-effort cleanup */ }
     throw error;
+  } finally {
+    if (previousTarget !== null) closeSync(previousTarget);
+    if (descriptor !== null) closeSync(descriptor);
+    parent.close();
   }
 }

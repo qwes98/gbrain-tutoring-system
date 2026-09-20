@@ -4,7 +4,7 @@ A deterministic, offline tutoring ledger with append-only events, replayable pro
 
 ## Install
 
-Requires Bun 1.3 or newer.
+Requires Linux with procfs and Bun 1.3 or newer. Storage mutations fail closed when descriptor-anchored procfs paths are unavailable.
 
 ```bash
 bun install

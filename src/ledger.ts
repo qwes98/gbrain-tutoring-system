@@ -2,20 +2,22 @@ import {
   closeSync,
   constants,
   existsSync,
+  fstatSync,
   fsyncSync,
   linkSync,
-  mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { fsyncDirectory } from "./atomic-file.ts";
+import { dlopen } from "bun:ffi";
+import { basename, dirname, resolve } from "node:path";
+import { type AnchoredDirectory, openAnchoredDirectory } from "./anchored-fs.ts";
 import { compareRfc3339Instants, rfc3339InstantKey } from "./json-schema.ts";
-import { assertContainedPath } from "./path-safety.ts";
+import { assertLexicallyContainedPath } from "./path-safety.ts";
 import { projectEvents } from "./projection.ts";
 import { assertEvent } from "./schema.ts";
 import type { LedgerEvent } from "./types.ts";
@@ -28,6 +30,8 @@ export interface ReadLedgerOptions {
   containmentRoot?: string;
 }
 export interface ReadLedgerResult { events: LedgerEvent[]; recovered_truncated_tail: boolean; truncated_tail: string | null; }
+export interface LedgerTransaction<T> { event: LedgerEvent; value: T; }
+export interface LedgerTransactionOptions { afterLedgerParentOpen?: () => void; }
 
 interface LockOwner {
   token: string;
@@ -37,11 +41,22 @@ interface LockOwner {
   acquired_at: number;
 }
 
+interface LockSnapshot {
+  owner: LockOwner;
+  identity: string;
+  content: string;
+}
+
+interface LockHandle extends LockSnapshot {
+  descriptor: number;
+}
+
 export interface ReclaimLockOptions {
   staleAfterMs?: number;
   now?: number;
   beforeReclaim?: (entryPath: string, owner: LockOwner) => void;
   afterOwnershipCheck?: (entryPath: string, owner: LockOwner) => void;
+  afterClaim?: (entryPath: string, owner: LockOwner) => void;
 }
 
 function ledgerContainmentRoot(path: string): string {
@@ -74,18 +89,41 @@ export function processIdentity(pid: number): string | null {
   } catch { return null; }
 }
 
-function lockDirectory(ledgerPath: string): string {
-  return `${ledgerPath}.lock`;
+function parseLockOwner(value: unknown): LockOwner | null {
+  if (!value || typeof value !== "object") return null;
+  const owner = value as Partial<LockOwner>;
+  if (typeof owner.token !== "string" || typeof owner.pid !== "number" || typeof owner.acquired_at !== "number") return null;
+  if (owner.process_identity !== null && typeof owner.process_identity !== "string") return null;
+  if (owner.ticket !== undefined && (!Number.isSafeInteger(owner.ticket) || owner.ticket < 1)) return null;
+  return owner as LockOwner;
 }
 
-function readLockOwner(path: string): LockOwner | null {
+function openLockHandle(directory: AnchoredDirectory, name: string): LockHandle | null {
+  let descriptor: number;
+  try { descriptor = openSync(directory.child(name), constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return null; }
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<LockOwner>;
-    if (typeof value.token !== "string" || typeof value.pid !== "number" || typeof value.acquired_at !== "number") return null;
-    if (value.process_identity !== null && typeof value.process_identity !== "string") return null;
-    if (value.ticket !== undefined && (!Number.isSafeInteger(value.ticket) || value.ticket < 1)) return null;
-    return value as LockOwner;
-  } catch { return null; }
+    const content = readFileSync(descriptor, "utf8");
+    const owner = parseLockOwner(JSON.parse(content));
+    if (!owner) {
+      closeSync(descriptor);
+      return null;
+    }
+    const stat = fstatSync(descriptor, { bigint: true });
+    return { owner, identity: `${stat.dev}:${stat.ino}`, content, descriptor };
+  } catch {
+    closeSync(descriptor);
+    return null;
+  }
+}
+
+function readLockSnapshot(directory: AnchoredDirectory, name: string): LockSnapshot | null {
+  const handle = openLockHandle(directory, name);
+  if (!handle) return null;
+  try { return { owner: handle.owner, identity: handle.identity, content: handle.content }; } finally { closeSync(handle.descriptor); }
+}
+
+function sameLock(left: LockSnapshot, right: LockSnapshot): boolean {
+  return left.owner.token === right.owner.token && left.identity === right.identity && left.content === right.content;
 }
 
 function ownerIsStale(owner: LockOwner, now: number, staleAfterMs: number): boolean {
@@ -95,113 +133,170 @@ function ownerIsStale(owner: LockOwner, now: number, staleAfterMs: number): bool
   return owner.process_identity !== null && currentIdentity !== null && owner.process_identity !== currentIdentity;
 }
 
-export function reclaimStaleLedgerLocks(ledgerPath: string, options: ReclaimLockOptions = {}): void {
-  const containmentRoot = ledgerContainmentRoot(ledgerPath);
-  const directory = lockDirectory(resolve(ledgerPath));
-  assertContainedPath(containmentRoot, directory);
-  if (!existsSync(directory)) return;
-  const now = options.now ?? Date.now();
-  const staleAfterMs = options.staleAfterMs ?? STALE_LOCK_MS;
-  for (const name of readdirSync(directory).sort()) {
-    if (!name.startsWith("choosing-") && !name.startsWith("ticket-")) continue;
-    const entryPath = join(directory, name);
-    assertContainedPath(containmentRoot, entryPath);
-    const owner = readLockOwner(entryPath);
-    if (!owner || !ownerIsStale(owner, now, staleAfterMs)) continue;
-    options.beforeReclaim?.(entryPath, owner);
-    const current = readLockOwner(entryPath);
-    if (!current || current.token !== owner.token) continue;
-    options.afterOwnershipCheck?.(entryPath, owner);
-    try { unlinkSync(entryPath); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+function restoreMovedReplacement(directory: AnchoredDirectory, originalName: string, claimName: string): void {
+  try {
+    linkSync(directory.child(claimName), directory.child(originalName));
+    unlinkSync(directory.child(claimName));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
 }
 
-function writeLockEntry(path: string, owner: LockOwner): void {
-  const pending = join(dirname(path), `.pending-${owner.token}-${crypto.randomUUID()}`);
+function removeLockIfOwned(directory: AnchoredDirectory, name: string, expected: LockSnapshot, options: ReclaimLockOptions = {}): boolean {
+  const claimName = `.reclaim-${options.now ?? Date.now()}-${crypto.randomUUID()}.json`;
+  try { renameSync(directory.child(name), directory.child(claimName)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  options.afterClaim?.(directory.child(name), expected.owner);
+  const claimed = readLockSnapshot(directory, claimName);
+  if (claimed && sameLock(claimed, expected)) {
+    unlinkSync(directory.child(claimName));
+    return true;
+  }
+  restoreMovedReplacement(directory, name, claimName);
+  return false;
+}
+
+function cleanupReclaimClaims(directory: AnchoredDirectory, now: number, staleAfterMs: number): void {
+  for (const name of readdirSync(directory.path()).sort()) {
+    const match = /^\.reclaim-(\d+)-[0-9a-f-]+\.json$/.exec(name);
+    if (!match || now - Number(match[1]) <= staleAfterMs) continue;
+    const handle = openLockHandle(directory, name);
+    if (!handle) continue;
+    try { removeLockIfOwned(directory, name, handle, { now }); } finally { closeSync(handle.descriptor); }
+  }
+}
+
+function reclaimStaleLocks(directory: AnchoredDirectory, options: ReclaimLockOptions = {}): void {
+  const now = options.now ?? Date.now();
+  const staleAfterMs = options.staleAfterMs ?? STALE_LOCK_MS;
+  cleanupReclaimClaims(directory, now, staleAfterMs);
+  for (const name of readdirSync(directory.path()).sort()) {
+    if (!name.startsWith("choosing-") && !name.startsWith("ticket-")) continue;
+    const handle = openLockHandle(directory, name);
+    if (!handle) continue;
+    try {
+      if (!ownerIsStale(handle.owner, now, staleAfterMs)) continue;
+      const entryPath = directory.child(name);
+      options.beforeReclaim?.(entryPath, handle.owner);
+      const current = readLockSnapshot(directory, name);
+      if (!current || !sameLock(current, handle)) continue;
+      options.afterOwnershipCheck?.(entryPath, handle.owner);
+      removeLockIfOwned(directory, name, handle, options);
+    } finally { closeSync(handle.descriptor); }
+  }
+}
+
+export function reclaimStaleLedgerLocks(ledgerPath: string, options: ReclaimLockOptions = {}): void {
+  const absolute = resolve(ledgerPath);
+  assertLexicallyContainedPath(ledgerContainmentRoot(absolute), absolute);
+  let ledgerDirectory: AnchoredDirectory;
+  try { ledgerDirectory = openAnchoredDirectory(dirname(absolute)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  let lockDirectory: AnchoredDirectory | null = null;
   try {
-    writeFileSync(pending, JSON.stringify(owner), { flag: "wx", mode: 0o600 });
-    linkSync(pending, path);
-    unlinkSync(pending);
+    try { lockDirectory = ledgerDirectory.openDirectory(`${basename(absolute)}.lock`); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    reclaimStaleLocks(lockDirectory, options);
+  } finally {
+    lockDirectory?.close();
+    ledgerDirectory.close();
+  }
+}
+
+function writeLockEntry(directory: AnchoredDirectory, name: string, owner: LockOwner): LockHandle {
+  const pendingName = `.pending-${owner.token}-${crypto.randomUUID()}`;
+  try {
+    writeFileSync(directory.child(pendingName), JSON.stringify(owner), { flag: "wx", mode: 0o600 });
+    linkSync(directory.child(pendingName), directory.child(name));
+    unlinkSync(directory.child(pendingName));
+    const handle = openLockHandle(directory, name);
+    if (!handle) throw new Error(`failed to publish ledger lock: ${name}`);
+    return handle;
   } catch (error) {
-    try { if (existsSync(pending)) unlinkSync(pending); } catch { }
+    try { if (existsSync(directory.child(pendingName))) unlinkSync(directory.child(pendingName)); } catch { }
     throw error;
   }
 }
 
-function lockEntries(directory: string, prefix: "choosing-" | "ticket-"): Array<{ path: string; owner: LockOwner }> {
-  return readdirSync(directory)
+function lockEntries(directory: AnchoredDirectory, prefix: "choosing-" | "ticket-"): Array<{ name: string; snapshot: LockSnapshot }> {
+  return readdirSync(directory.path())
     .filter((name) => name.startsWith(prefix))
     .sort()
     .flatMap((name) => {
-      const path = join(directory, name);
-      const owner = readLockOwner(path);
-      return owner ? [{ path, owner }] : [];
+      const snapshot = readLockSnapshot(directory, name);
+      return snapshot ? [{ name, snapshot }] : [];
     });
 }
 
-async function acquireLock(ledgerPath: string): Promise<() => void> {
-  const containmentRoot = ledgerContainmentRoot(ledgerPath);
-  const directory = lockDirectory(resolve(ledgerPath));
-  assertContainedPath(containmentRoot, directory);
-  mkdirSync(directory, { recursive: true });
-  assertContainedPath(containmentRoot, directory);
+async function acquireLock(ledgerPath: string, ledgerDirectory: AnchoredDirectory, ledgerName: string): Promise<() => void> {
+  const directory = ledgerDirectory.openDirectory(`${ledgerName}.lock`, { create: true, mode: 0o700 });
   const started = Date.now();
   const token = crypto.randomUUID();
   const identity = processIdentity(process.pid);
-  const choosingPath = join(directory, `choosing-${token}.json`);
-  let ticketPath: string | null = null;
+  const choosingName = `choosing-${token}.json`;
+  let choosingHandle: LockHandle | null = null;
+  let ticketName: string | null = null;
+  let ticketHandle: LockHandle | null = null;
   try {
-    writeLockEntry(choosingPath, { token, pid: process.pid, process_identity: identity, acquired_at: Date.now() });
-    reclaimStaleLedgerLocks(ledgerPath);
-    const maximum = lockEntries(directory, "ticket-").reduce((current, entry) => Math.max(current, entry.owner.ticket ?? 0), 0);
+    choosingHandle = writeLockEntry(directory, choosingName, { token, pid: process.pid, process_identity: identity, acquired_at: Date.now() });
+    reclaimStaleLocks(directory);
+    const maximum = lockEntries(directory, "ticket-").reduce((current, entry) => Math.max(current, entry.snapshot.owner.ticket ?? 0), 0);
     const ticket = maximum + 1;
-    ticketPath = join(directory, `ticket-${String(ticket).padStart(12, "0")}-${token}.json`);
-    writeLockEntry(ticketPath, { token, ticket, pid: process.pid, process_identity: identity, acquired_at: Date.now() });
-    unlinkSync(choosingPath);
+    ticketName = `ticket-${String(ticket).padStart(12, "0")}-${token}.json`;
+    ticketHandle = writeLockEntry(directory, ticketName, { token, ticket, pid: process.pid, process_identity: identity, acquired_at: Date.now() });
+    removeLockIfOwned(directory, choosingName, choosingHandle);
+    closeSync(choosingHandle.descriptor);
+    choosingHandle = null;
 
     while (true) {
-      reclaimStaleLedgerLocks(ledgerPath);
-      const anotherChoosing = lockEntries(directory, "choosing-").some((entry) => entry.owner.token !== token);
+      reclaimStaleLocks(directory);
+      const anotherChoosing = lockEntries(directory, "choosing-").some((entry) => entry.snapshot.owner.token !== token);
       const tickets = lockEntries(directory, "ticket-")
-        .sort((left, right) => (left.owner.ticket ?? 0) - (right.owner.ticket ?? 0) || left.owner.token.localeCompare(right.owner.token));
-      if (!anotherChoosing && tickets[0]?.owner.token === token) break;
+        .sort((left, right) => (left.snapshot.owner.ticket ?? 0) - (right.snapshot.owner.ticket ?? 0)
+          || left.snapshot.owner.token.localeCompare(right.snapshot.owner.token));
+      if (!anotherChoosing && tickets[0]?.snapshot.owner.token === token) break;
       if (Date.now() - started >= LOCK_TIMEOUT_MS) throw new Error(`timed out acquiring ledger lock: ${ledgerPath}`);
       await Bun.sleep(10);
     }
   } catch (error) {
-    try { if (existsSync(choosingPath)) unlinkSync(choosingPath); } catch { }
-    try { if (ticketPath && existsSync(ticketPath)) unlinkSync(ticketPath); } catch { }
+    if (choosingHandle) {
+      try { removeLockIfOwned(directory, choosingName, choosingHandle); } catch { }
+      try { closeSync(choosingHandle.descriptor); } catch { }
+    }
+    if (ticketName && ticketHandle) {
+      try { removeLockIfOwned(directory, ticketName, ticketHandle); } catch { }
+      try { closeSync(ticketHandle.descriptor); } catch { }
+    }
+    try { directory.close(); } catch { }
     throw error;
   }
 
-  const ownedTicketPath = ticketPath;
+  const ownedTicketName = ticketName;
+  const ownedTicketHandle = ticketHandle;
   return () => {
-    if (!ownedTicketPath) return;
-    const owner = readLockOwner(ownedTicketPath);
-    if (owner?.token !== token) return;
-    try { unlinkSync(ownedTicketPath); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      if (ownedTicketName && ownedTicketHandle) removeLockIfOwned(directory, ownedTicketName, ownedTicketHandle);
+    } finally {
+      if (ownedTicketHandle) closeSync(ownedTicketHandle.descriptor);
+      directory.close();
     }
   };
 }
 
-function decodeLedger(path: string): string {
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const bytes = readFileSync(descriptor);
-    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {
-      throw new Error(`ledger contains invalid UTF-8: ${path}`);
-    }
-  } finally { closeSync(descriptor); }
+function decodeLedgerDescriptor(descriptor: number, path: string): string {
+  const bytes = readFileSync(descriptor);
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {
+    throw new Error(`ledger contains invalid UTF-8: ${path}`);
+  }
 }
 
-export function readLedger(path: string, options: ReadLedgerOptions = {}): ReadLedgerResult {
-  const containmentRoot = options.containmentRoot ?? ledgerContainmentRoot(path);
-  assertContainedPath(containmentRoot, path);
-  if (!existsSync(path)) return { events: [], recovered_truncated_tail: false, truncated_tail: null };
-  const raw = decodeLedger(path);
+function parseLedger(raw: string, path: string, options: ReadLedgerOptions): ReadLedgerResult {
   if (raw.length === 0) return { events: [], recovered_truncated_tail: false, truncated_tail: null };
   const hasTruncatedTail = !raw.endsWith("\n");
   if (hasTruncatedTail && options.truncatedTail !== "recover") {
@@ -227,50 +322,138 @@ export function readLedger(path: string, options: ReadLedgerOptions = {}): ReadL
   return { events, recovered_truncated_tail: hasTruncatedTail, truncated_tail: truncatedTail };
 }
 
-export async function appendEvent(path: string, event: LedgerEvent): Promise<void> {
-  assertEvent(event);
-  const containmentRoot = ledgerContainmentRoot(path);
-  assertContainedPath(containmentRoot, path);
-  mkdirSync(dirname(path), { recursive: true });
-  assertContainedPath(containmentRoot, path);
-  const release = await acquireLock(path);
-  try {
-    const current = readLedger(path, { containmentRoot });
-    if (current.events.some((existing) => existing.id === event.id)) throw new Error(`duplicate event id: ${event.id}`);
-    if (event.type === "event.corrected") {
-      const data = event.data as { corrects_event_id?: string; replacement_data?: Record<string, unknown> };
-      const target = current.events.find((existing) => existing.id === data.corrects_event_id);
-      if (!target) throw new Error(`correction target not found: ${data.corrects_event_id}`);
-      if (target.type === "event.corrected") throw new Error("corrections cannot target correction events");
-      assertEvent({ ...target, data: data.replacement_data });
-    }
-    const candidateEvents = [...current.events, event];
-    const validationTimes = event.type === "event.corrected"
-      ? [...candidateEvents
-        .filter((candidate) => compareRfc3339Instants(candidate.occurred_at, event.occurred_at) >= 0)
-        .reduce((instants, candidate) => instants.set(rfc3339InstantKey(candidate.occurred_at), candidate.occurred_at), new Map<string, string>())
-        .values()]
-        .sort(compareRfc3339Instants)
-      : [candidateEvents.map((candidate) => candidate.occurred_at).sort(compareRfc3339Instants).at(-1)!];
-    for (const validationTime of validationTimes) {
-      projectEvents(candidateEvents, { asOf: validationTime });
-    }
-    const line = Buffer.from(`${JSON.stringify(event)}\n`);
-    const existed = existsSync(path);
-    const descriptor = openSync(path, constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW, 0o644);
-    try {
-      let offset = 0;
-      while (offset < line.length) {
-        const written = writeSync(descriptor, line, offset, line.length - offset);
-        if (written <= 0) throw new Error(`short append at offset ${offset}/${line.length}`);
-        offset += written;
-      }
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
-    if (!existed) fsyncDirectory(dirname(path));
-  } finally {
-    release();
+export function readLedger(path: string, options: ReadLedgerOptions = {}): ReadLedgerResult {
+  const absolute = resolve(path);
+  const containmentRoot = options.containmentRoot ?? ledgerContainmentRoot(absolute);
+  assertLexicallyContainedPath(containmentRoot, absolute);
+  let directory: AnchoredDirectory;
+  try { directory = openAnchoredDirectory(dirname(absolute)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { events: [], recovered_truncated_tail: false, truncated_tail: null };
+    throw error;
   }
+  let descriptor: number;
+  try {
+    try { descriptor = openSync(directory.child(basename(absolute)), constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { events: [], recovered_truncated_tail: false, truncated_tail: null };
+      throw error;
+    }
+    try { return parseLedger(decodeLedgerDescriptor(descriptor, absolute), absolute, options); } finally { closeSync(descriptor); }
+  } finally {
+    directory.close();
+  }
+}
+
+function validateAppend(current: ReadLedgerResult, event: LedgerEvent): void {
+  assertEvent(event);
+  if (current.events.some((existing) => existing.id === event.id)) throw new Error(`duplicate event id: ${event.id}`);
+  if (event.type === "event.corrected") {
+    const data = event.data as { corrects_event_id?: string; replacement_data?: Record<string, unknown> };
+    const target = current.events.find((existing) => existing.id === data.corrects_event_id);
+    if (!target) throw new Error(`correction target not found: ${data.corrects_event_id}`);
+    if (target.type === "event.corrected") throw new Error("corrections cannot target correction events");
+    assertEvent({ ...target, data: data.replacement_data });
+  }
+  const candidateEvents = [...current.events, event];
+  const validationTimes = event.type === "event.corrected"
+    ? [...candidateEvents
+      .filter((candidate) => compareRfc3339Instants(candidate.occurred_at, event.occurred_at) >= 0)
+      .reduce((instants, candidate) => instants.set(rfc3339InstantKey(candidate.occurred_at), candidate.occurred_at), new Map<string, string>())
+      .values()]
+      .sort(compareRfc3339Instants)
+    : [candidateEvents.map((candidate) => candidate.occurred_at).sort(compareRfc3339Instants).at(-1)!];
+  for (const validationTime of validationTimes) projectEvents(candidateEvents, { asOf: validationTime });
+}
+
+function openLedgerForTransaction(directory: AnchoredDirectory, name: string): { descriptor: number; created: boolean } {
+  try {
+    return { descriptor: openSync(directory.child(name), constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW), created: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  try {
+    return {
+      descriptor: openSync(directory.child(name), constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644),
+      created: true,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return { descriptor: openSync(directory.child(name), constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW), created: false };
+  }
+}
+
+const openLibc = () => dlopen("libc.so.6", {
+  flock: { args: ["i32", "i32"], returns: "i32" } as const,
+});
+let libc: ReturnType<typeof openLibc> | null = null;
+function nativeLedgerLock(): ReturnType<typeof openLibc> {
+  if (process.platform !== "linux") throw new Error("ledger inode locking requires Linux");
+  return libc ??= openLibc();
+}
+const LOCK_EXCLUSIVE_NONBLOCKING = 2 | 4;
+const LOCK_UN = 8;
+
+async function acquireLedgerInodeLock(descriptor: number, path: string): Promise<() => void> {
+  const started = Date.now();
+  while (nativeLedgerLock().symbols.flock(descriptor, LOCK_EXCLUSIVE_NONBLOCKING) !== 0) {
+    if (Date.now() - started >= LOCK_TIMEOUT_MS) throw new Error(`timed out acquiring ledger inode lock: ${path}`);
+    await Bun.sleep(10);
+  }
+  return () => {
+    if (nativeLedgerLock().symbols.flock(descriptor, LOCK_UN) !== 0) throw new Error(`failed to release ledger inode lock: ${path}`);
+  };
+}
+
+export async function transactLedger<T>(
+  path: string,
+  transaction: (events: readonly LedgerEvent[]) => LedgerTransaction<T>,
+  options: LedgerTransactionOptions = {},
+): Promise<T> {
+  const absolute = resolve(path);
+  const containmentRoot = ledgerContainmentRoot(absolute);
+  assertLexicallyContainedPath(containmentRoot, absolute);
+  const directory = openAnchoredDirectory(dirname(absolute), { create: true });
+  let release: (() => void) | null = null;
+  let releaseInode: (() => void) | null = null;
+  let descriptor: number | null = null;
+  let value!: T;
+  let failed = false;
+  let failure: unknown;
+  try {
+    options.afterLedgerParentOpen?.();
+    const opened = openLedgerForTransaction(directory, basename(absolute));
+    descriptor = opened.descriptor;
+    releaseInode = await acquireLedgerInodeLock(descriptor, absolute);
+    release = await acquireLock(absolute, directory, basename(absolute));
+    const current = parseLedger(decodeLedgerDescriptor(descriptor, absolute), absolute, {});
+    const selected = transaction(current.events);
+    validateAppend(current, selected.event);
+    const line = Buffer.from(`${JSON.stringify(selected.event)}\n`);
+    let offset = 0;
+    while (offset < line.length) {
+      const written = writeSync(descriptor, line, offset, line.length - offset);
+      if (written <= 0) throw new Error(`short append at offset ${offset}/${line.length}`);
+      offset += written;
+    }
+    fsyncSync(descriptor);
+    if (opened.created) directory.fsync();
+    value = selected.value;
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  let cleanupFailure: unknown;
+  const cleanup = (operation: () => void): void => {
+    try { operation(); } catch (error) { cleanupFailure ??= error; }
+  };
+  if (release) cleanup(release);
+  if (releaseInode) cleanup(releaseInode);
+  if (descriptor !== null) cleanup(() => closeSync(descriptor));
+  cleanup(() => directory.close());
+  if (failed) throw failure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  return value;
+}
+
+export async function appendEvent(path: string, event: LedgerEvent, options: LedgerTransactionOptions = {}): Promise<void> {
+  await transactLedger(path, () => ({ event, value: undefined }), options);
 }

@@ -6,6 +6,14 @@ function isContained(root: string, candidate: string): boolean {
   return relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation));
 }
 
+export function assertLexicallyContainedPath(containmentRoot: string, target: string): void {
+  const root = resolve(containmentRoot);
+  const candidate = resolve(target);
+  if (!isContained(root, candidate)) {
+    throw new Error(`path escapes containment root: ${candidate}`);
+  }
+}
+
 function prospectiveCanonical(path: string): string {
   const missing: string[] = [];
   let cursor = resolve(path);
@@ -47,9 +55,7 @@ function assertNoSymlinkAncestors(target: string): void {
 export function assertContainedPath(containmentRoot: string, target: string): void {
   const root = resolve(containmentRoot);
   const candidate = resolve(target);
-  if (!isContained(root, candidate)) {
-    throw new Error(`path escapes containment root: ${candidate}`);
-  }
+  assertLexicallyContainedPath(root, candidate);
   assertNoSymlinkAncestors(root);
   assertNoSymlinkChain(root, candidate);
   const canonicalRoot = prospectiveCanonical(root);
