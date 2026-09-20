@@ -8,6 +8,9 @@ export interface LedgerEvent<T = Record<string, unknown>> {
   type: LedgerEventType;
   occurred_at: string;
   data: T;
+  client_request_id?: string;
+  client_request_hash?: string;
+  command_receipt?: Record<string, unknown>;
 }
 
 export interface ValidationResult { valid: boolean; errors: string[]; }

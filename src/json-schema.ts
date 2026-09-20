@@ -95,7 +95,16 @@ function validateNode(value: unknown, schema: Schema, root: Schema, path: string
     if (typeof schema.minLength === "number" && value.length < schema.minLength) errors.push(`${path}: must not be empty`);
     if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(value)) errors.push(`${path}: does not match required pattern`);
     if (schema.format === "date-time" && !isRfc3339DateTime(value)) errors.push(`${path}: must be an RFC 3339 date-time`);
+  } else if (schema.type === "integer") {
+    if (!Number.isInteger(value)) return [...errors, `${path}: must be an integer`];
+    if (typeof schema.minimum === "number" && (value as number) < schema.minimum) errors.push(`${path}: must be at least ${schema.minimum}`);
+    if (typeof schema.maximum === "number" && (value as number) > schema.maximum) errors.push(`${path}: must be at most ${schema.maximum}`);
+  } else if (schema.type === "number") {
+    if (typeof value !== "number" || !Number.isFinite(value)) return [...errors, `${path}: must be a finite number`];
+    if (typeof schema.minimum === "number" && value < schema.minimum) errors.push(`${path}: must be at least ${schema.minimum}`);
+    if (typeof schema.maximum === "number" && value > schema.maximum) errors.push(`${path}: must be at most ${schema.maximum}`);
   } else if (schema.type === "boolean" && typeof value !== "boolean") errors.push(`${path}: must be a boolean`);
+  else if (schema.type === "null" && value !== null) errors.push(`${path}: must be null`);
   return errors;
 }
 

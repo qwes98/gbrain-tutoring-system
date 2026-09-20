@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import ledgerSchema from "../schemas/ledger-event.schema.json";
+import appContractSchema from "../schemas/app-contract.v1.schema.json";
 import projectTemplate from "../templates/project.json";
 import topicTemplate from "../templates/topic.json";
 import { type AnchoredDirectory, openAnchoredDirectory } from "./anchored-fs.ts";
@@ -107,6 +108,7 @@ export function createProject(workspace: string): void {
     topics = root.openDirectory("topics", { create: true });
     writeTextIfAbsent(root, "gbrain-tutor.json", `${JSON.stringify(projectTemplate, null, 2)}\n`);
     writeTextIfAbsent(schemas, "ledger-event.schema.json", `${JSON.stringify(ledgerSchema, null, 2)}\n`);
+    writeTextIfAbsent(schemas, "app-contract.v1.schema.json", `${JSON.stringify(appContractSchema, null, 2)}\n`);
     root.fsync();
   } finally {
     topics?.close();

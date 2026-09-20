@@ -4,18 +4,43 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { atomicWriteText } from "./atomic-file.ts";
+import { listTopics, listWorkspaces, openTopic, readProjectionSnapshot, resumeTopic } from "./app-query.ts";
+import { commitLedgerEvent, commitTutorAction, readCommandReceipt } from "./commands.ts";
+import { buildContextPacket, type SourceExcerpt } from "./context-packet.ts";
 import { appendEvent, readLedger, transactLedger } from "./ledger.ts";
 import { selectTutorAction } from "./policy.ts";
 import { projectEvents, writeProjections } from "./projection.ts";
 import { validateEvent } from "./schema.ts";
 import type { LedgerEvent, LedgerEventType } from "./types.ts";
+import {
+  addComment,
+  addConversationTurn,
+  addHighlight,
+  deleteComment,
+  deleteHighlight,
+  readStudyState,
+  registerPdf,
+  setReadingProgress,
+  type SourceAnchor,
+} from "./study-state.ts";
 import { createProject, createTopic } from "./workspace.ts";
 
-const HELP = `gbrain-tutor v0.1
+const HELP = `gbrain-tutor v0.2
 
 Commands:
   init WORKSPACE
+  workspace list WORKSPACE...
   topic init WORKSPACE SLUG --title TITLE --source FILE
+  topic list WORKSPACE
+  topic open|resume TOPIC_DIR
+  projection get TOPIC_DIR --as-of RFC3339
+  pdf register TOPIC_DIR --request-id KEY --document ID --relative-path PATH --pages N --at RFC3339
+  study progress set TOPIC_DIR [options]
+  study highlight add|delete TOPIC_DIR [options]
+  study comment add|delete TOPIC_DIR [options]
+  study conversation add TOPIC_DIR [options]
+  context build TOPIC_DIR --question TEXT --source-excerpt-json JSON [options]
+  receipt get TOPIC_DIR --request-id KEY
   record concept|question|attempt|evidence|misconception TOPIC_DIR [options]
   resolve-misconception TOPIC_DIR [options]
   correct TOPIC_DIR [options]
@@ -55,6 +80,26 @@ function optional(parsed: Parsed, name: string, fallback?: string): string | und
 
 function repeated(parsed: Parsed, name: string): string[] {
   return parsed.options.get(name) ?? [];
+}
+
+function requiredInteger(parsed: Parsed, name: string): number {
+  const text = required(parsed, name);
+  const value = Number(text);
+  if (!Number.isInteger(value)) throw new Error(`--${name} must be an integer`);
+  return value;
+}
+
+function requiredNumber(parsed: Parsed, name: string): number {
+  const text = required(parsed, name);
+  const value = Number(text);
+  if (!Number.isFinite(value)) throw new Error(`--${name} must be a number`);
+  return value;
+}
+
+function requiredBoolean(parsed: Parsed, name: string): boolean {
+  const text = required(parsed, name);
+  if (text !== "true" && text !== "false") throw new Error(`--${name} must be true or false`);
+  return text === "true";
 }
 
 function topicMetadata(topicDir: string): { slug: string } {
@@ -107,7 +152,7 @@ async function checkStorageCapabilities(): Promise<boolean> {
   }
 }
 
-async function appendFromRecord(kind: string, topicDir: string, parsed: Parsed): Promise<LedgerEvent> {
+async function appendFromRecord(kind: string, topicDir: string, parsed: Parsed): Promise<LedgerEvent | Record<string, unknown>> {
   let event: LedgerEvent;
   if (kind === "concept") {
     event = eventFrom(topicDir, parsed, "concept.declared", { concept_id: required(parsed, "concept"), title: required(parsed, "title"), source_refs: repeated(parsed, "source-ref") });
@@ -124,6 +169,8 @@ async function appendFromRecord(kind: string, topicDir: string, parsed: Parsed):
   } else {
     throw new Error(`unknown record kind: ${kind}`);
   }
+  const requestId = optional(parsed, "request-id");
+  if (requestId) return await commitLedgerEvent(topicDir, `record.${kind}`, requestId, event) as unknown as Record<string, unknown>;
   await appendEvent(ledgerPath(topicDir), event);
   return event;
 }
@@ -137,38 +184,132 @@ async function main(args: string[]): Promise<void> {
     if (!parsed.positional[1]) throw new Error("usage: gbrain-tutor init WORKSPACE");
     createProject(workspace);
     print({ schema_version: 1, workspace });
+  } else if (command === "workspace" && parsed.positional[1] === "list") {
+    const paths = parsed.positional.slice(2);
+    if (paths.length === 0) throw new Error("usage: gbrain-tutor workspace list WORKSPACE...");
+    print(listWorkspaces(paths));
+  } else if (command === "topic" && parsed.positional[1] === "list") {
+    const workspaceArg = parsed.positional[2];
+    if (!workspaceArg) throw new Error("usage: gbrain-tutor topic list WORKSPACE");
+    print(listTopics(workspaceArg));
+  } else if (command === "topic" && (parsed.positional[1] === "open" || parsed.positional[1] === "resume")) {
+    const topicArg = parsed.positional[2];
+    if (!topicArg) throw new Error(`usage: gbrain-tutor topic ${parsed.positional[1]} TOPIC_DIR`);
+    print(parsed.positional[1] === "resume" ? resumeTopic(topicArg) : openTopic(topicArg));
   } else if (command === "topic" && parsed.positional[1] === "init") {
     const workspaceArg = parsed.positional[2];
     const slug = parsed.positional[3];
     if (!workspaceArg || !slug) throw new Error("usage: gbrain-tutor topic init WORKSPACE SLUG --title TITLE --source FILE");
     const topic_dir = createTopic(resolve(workspaceArg), { slug, title: required(parsed, "title"), source: resolve(required(parsed, "source")) });
     print({ schema_version: 1, topic_dir, source: basename(required(parsed, "source")) });
+  } else if (command === "projection" && parsed.positional[1] === "get") {
+    const topicArg = parsed.positional[2];
+    if (!topicArg) throw new Error("usage: gbrain-tutor projection get TOPIC_DIR --as-of RFC3339");
+    print(readProjectionSnapshot(topicArg, required(parsed, "as-of")));
+  } else if (command === "pdf" && parsed.positional[1] === "register") {
+    const topicArg = parsed.positional[2];
+    if (!topicArg) throw new Error("usage: gbrain-tutor pdf register TOPIC_DIR [options]");
+    print(await registerPdf(topicArg, {
+      request_id: required(parsed, "request-id"),
+      document_id: required(parsed, "document"),
+      relative_path: required(parsed, "relative-path"),
+      page_count: requiredInteger(parsed, "pages"),
+      occurred_at: required(parsed, "at"),
+    }));
+  } else if (command === "study" && parsed.positional[1] === "progress" && parsed.positional[2] === "set") {
+    const topicArg = parsed.positional[3];
+    if (!topicArg) throw new Error("usage: gbrain-tutor study progress set TOPIC_DIR [options]");
+    print(await setReadingProgress(topicArg, {
+      request_id: required(parsed, "request-id"), chapter_id: required(parsed, "chapter"),
+      physical_page: requiredInteger(parsed, "page"), position: requiredNumber(parsed, "position"),
+      completed: requiredBoolean(parsed, "completed"), occurred_at: required(parsed, "at"),
+    }));
+  } else if (command === "study" && parsed.positional[1] === "highlight") {
+    const operation = parsed.positional[2];
+    const topicArg = parsed.positional[3];
+    if (!topicArg) throw new Error("usage: gbrain-tutor study highlight add|delete TOPIC_DIR [options]");
+    if (operation === "add") print(await addHighlight(topicArg, {
+      request_id: required(parsed, "request-id"), highlight_id: required(parsed, "highlight"),
+      anchor: JSON.parse(required(parsed, "anchor-json")) as SourceAnchor, occurred_at: required(parsed, "at"),
+    }));
+    else if (operation === "delete") print(await deleteHighlight(topicArg, {
+      request_id: required(parsed, "request-id"), highlight_id: required(parsed, "highlight"), occurred_at: required(parsed, "at"),
+    }));
+    else throw new Error(`unknown highlight operation: ${operation ?? ""}`);
+  } else if (command === "study" && parsed.positional[1] === "comment") {
+    const operation = parsed.positional[2];
+    const topicArg = parsed.positional[3];
+    if (!topicArg) throw new Error("usage: gbrain-tutor study comment add|delete TOPIC_DIR [options]");
+    if (operation === "add") {
+      const candidateJson = optional(parsed, "candidate-json");
+      print(await addComment(topicArg, {
+        request_id: required(parsed, "request-id"), comment_id: required(parsed, "comment"), text: required(parsed, "text"),
+        anchor: JSON.parse(required(parsed, "anchor-json")) as SourceAnchor,
+        ...(candidateJson ? { candidate: JSON.parse(candidateJson) as { candidate_id: string; kind: "question" | "misconception"; concept_id?: string } } : {}),
+        occurred_at: required(parsed, "at"),
+      }));
+    } else if (operation === "delete") print(await deleteComment(topicArg, {
+      request_id: required(parsed, "request-id"), comment_id: required(parsed, "comment"), occurred_at: required(parsed, "at"),
+    }));
+    else throw new Error(`unknown comment operation: ${operation ?? ""}`);
+  } else if (command === "study" && parsed.positional[1] === "conversation" && parsed.positional[2] === "add") {
+    const topicArg = parsed.positional[3];
+    if (!topicArg) throw new Error("usage: gbrain-tutor study conversation add TOPIC_DIR [options]");
+    const anchorJson = optional(parsed, "anchor-json");
+    print(await addConversationTurn(topicArg, {
+      request_id: required(parsed, "request-id"), turn_id: required(parsed, "turn"),
+      speaker: required(parsed, "speaker") as "learner" | "tutor", text: required(parsed, "text"),
+      ...(anchorJson ? { anchor: JSON.parse(anchorJson) as SourceAnchor } : {}), occurred_at: required(parsed, "at"),
+    }));
+  } else if (command === "context" && parsed.positional[1] === "build") {
+    const topicArg = parsed.positional[2];
+    if (!topicArg) throw new Error("usage: gbrain-tutor context build TOPIC_DIR [options]");
+    const projection = readProjectionSnapshot(topicArg, required(parsed, "as-of")).projection;
+    const source_excerpts = repeated(parsed, "source-excerpt-json").map((value) => JSON.parse(value) as SourceExcerpt);
+    print(buildContextPacket({
+      question: required(parsed, "question"), source_excerpts, study: readStudyState(topicArg), projection,
+      limits: { max_items: requiredInteger(parsed, "max-items"), max_text_chars: requiredInteger(parsed, "max-chars") },
+    }));
+  } else if (command === "receipt" && parsed.positional[1] === "get") {
+    const topicArg = parsed.positional[2];
+    if (!topicArg) throw new Error("usage: gbrain-tutor receipt get TOPIC_DIR --request-id KEY");
+    const receipt = readCommandReceipt(topicArg, required(parsed, "request-id"));
+    if (!receipt) throw new Error(`receipt not found: ${required(parsed, "request-id")}`);
+    print(receipt);
   } else if (command === "record") {
     const kind = parsed.positional[1];
     const topicArg = parsed.positional[2];
     if (!kind || !topicArg) throw new Error("usage: gbrain-tutor record KIND TOPIC_DIR [options]");
-    const event = await appendFromRecord(kind, resolve(topicArg), parsed);
-    print({ schema_version: 1, appended: event });
+    const result = await appendFromRecord(kind, resolve(topicArg), parsed);
+    print(optional(parsed, "request-id") ? result : { schema_version: 1, appended: result });
   } else if (command === "resolve-misconception") {
     const topicArg = parsed.positional[1];
     if (!topicArg) throw new Error("usage: gbrain-tutor resolve-misconception TOPIC_DIR [options]");
     const topicDir = resolve(topicArg);
     const event = eventFrom(topicDir, parsed, "misconception.resolved", { misconception_id: required(parsed, "misconception"), evidence_event_ids: repeated(parsed, "evidence-event") });
-    await appendEvent(ledgerPath(topicDir), event);
-    print({ schema_version: 1, appended: event });
+    const requestId = optional(parsed, "request-id");
+    if (requestId) print(await commitLedgerEvent(topicDir, "misconception.resolve", requestId, event));
+    else { await appendEvent(ledgerPath(topicDir), event); print({ schema_version: 1, appended: event }); }
   } else if (command === "correct") {
     const topicArg = parsed.positional[1];
     if (!topicArg) throw new Error("usage: gbrain-tutor correct TOPIC_DIR --event ID --replacement-data JSON --reason TEXT");
     const topicDir = resolve(topicArg);
     const replacement = JSON.parse(required(parsed, "replacement-data")) as Record<string, unknown>;
     const event = eventFrom(topicDir, parsed, "event.corrected", { corrects_event_id: required(parsed, "event"), replacement_data: replacement, reason: required(parsed, "reason") });
-    await appendEvent(ledgerPath(topicDir), event);
-    print({ schema_version: 1, appended: event });
+    const requestId = optional(parsed, "request-id");
+    if (requestId) print(await commitLedgerEvent(topicDir, "event.correct", requestId, event));
+    else { await appendEvent(ledgerPath(topicDir), event); print({ schema_version: 1, appended: event }); }
   } else if (command === "next") {
     const topicArg = parsed.positional[1];
     if (!topicArg) throw new Error("usage: gbrain-tutor next TOPIC_DIR [--at RFC3339]");
     const topicDir = resolve(topicArg);
     const at = optional(parsed, "at", new Date().toISOString())!;
+    const requestId = optional(parsed, "request-id");
+    if (requestId) {
+      if (!optional(parsed, "at")) throw new Error("--at is required with --request-id");
+      print(await commitTutorAction(topicDir, { request_id: requestId, occurred_at: at }));
+      return;
+    }
     const { state, decision, actionEvent, updated } = await transactLedger(ledgerPath(topicDir), (events) => {
       const state = projectEvents([...events], { asOf: at });
       const decision = selectTutorAction(state);
@@ -189,8 +330,9 @@ async function main(args: string[]): Promise<void> {
     if (!topicArg) throw new Error("usage: gbrain-tutor schedule-review TOPIC_DIR [options]");
     const topicDir = resolve(topicArg);
     const event = eventFrom(topicDir, parsed, "review.scheduled", { concept_id: required(parsed, "concept"), due_at: required(parsed, "due"), reason_event_ids: repeated(parsed, "reason-event") });
-    await appendEvent(ledgerPath(topicDir), event);
-    print({ schema_version: 1, appended: event });
+    const requestId = optional(parsed, "request-id");
+    if (requestId) print(await commitLedgerEvent(topicDir, "review.schedule", requestId, event));
+    else { await appendEvent(ledgerPath(topicDir), event); print({ schema_version: 1, appended: event }); }
   } else if (command === "project") {
     const topicArg = parsed.positional[1];
     if (!topicArg) throw new Error("usage: gbrain-tutor project TOPIC_DIR [--as-of RFC3339]");
@@ -205,9 +347,9 @@ async function main(args: string[]): Promise<void> {
     const topicDir = resolve(topicArg);
     const asOf = optional(parsed, "as-of", new Date().toISOString())!;
     const state = projectEvents(readLedger(ledgerPath(topicDir)).events, { asOf });
-    const output = { schema_version: 1, boundary: "gbrain-promotion-candidate", generated_at: asOf, source_topic: state.topic, mutates_gbrain: false, candidates: state.promotion_candidates };
+    const output = { schema_version: 1, boundary: "gbrain-promotion-candidate", generated_at: asOf, source_topic: state.topic, mutates_gbrain: false, mutates_knowledge_base: false, candidates: state.promotion_candidates };
     atomicWriteText(join(topicDir, "exports", "gbrain-promotion-candidates.json"), `${JSON.stringify(output, null, 2)}\n`);
-    print({ schema_version: 1, output: join(topicDir, "exports", "gbrain-promotion-candidates.json"), candidate_count: state.promotion_candidates.length, mutates_gbrain: false });
+    print({ schema_version: 1, output: join(topicDir, "exports", "gbrain-promotion-candidates.json"), candidate_count: state.promotion_candidates.length, mutates_gbrain: false, mutates_knowledge_base: false });
   } else if (command === "doctor") {
     const skill = resolve(optional(parsed, "skill", join(import.meta.dir, "..", "skills", "gbrain-tutor", "SKILL.md"))!);
     const sample = validateEvent({ schema_version: 1, id: "doctor", topic: "doctor", type: "evidence.recorded", occurred_at: "2026-01-01T00:00:00.000Z", data: { concept_id: "doctor", kind: "observation", summary: "schema probe" } });

@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbrain.local/schemas/app-contract.v1.schema.json",
+  "title": "GBrain Tutor app contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/workspace_list" },
+    { "$ref": "#/$defs/topic_list" },
+    { "$ref": "#/$defs/topic_snapshot" },
+    { "$ref": "#/$defs/projection_snapshot" },
+    { "$ref": "#/$defs/tutor_decision" },
+    { "$ref": "#/$defs/command_receipt" }
+  ],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 },
+    "normalized_region": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "minimum": 0, "maximum": 1 },
+        "height": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "source_anchor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["document_id", "document_sha256", "physical_page", "kind", "selected_text", "status"],
+          "properties": {
+            "document_id": { "$ref": "#/$defs/id" },
+            "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "physical_page": { "type": "integer", "minimum": 1 },
+            "display_label": { "type": "string" },
+            "kind": { "const": "text" },
+            "selected_text": { "type": "string", "minLength": 1 },
+            "normalized_region": { "$ref": "#/$defs/normalized_region" },
+            "status": { "enum": ["exact", "ambiguous", "unavailable"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["document_id", "document_sha256", "physical_page", "kind", "normalized_region", "status"],
+          "properties": {
+            "document_id": { "$ref": "#/$defs/id" },
+            "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "physical_page": { "type": "integer", "minimum": 1 },
+            "display_label": { "type": "string" },
+            "kind": { "const": "region" },
+            "normalized_region": { "$ref": "#/$defs/normalized_region" },
+            "status": { "enum": ["exact", "ambiguous", "unavailable"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["document_id", "document_sha256", "physical_page", "kind", "status"],
+          "properties": {
+            "document_id": { "$ref": "#/$defs/id" },
+            "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "physical_page": { "type": "integer", "minimum": 1 },
+            "display_label": { "type": "string" },
+            "kind": { "const": "page" },
+            "status": { "enum": ["exact", "ambiguous", "unavailable"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "document_identity": {
+      "type": "object",
+      "required": ["document_id", "relative_path", "sha256", "byte_length", "page_count", "status"],
+      "properties": {
+        "document_id": { "$ref": "#/$defs/id" },
+        "relative_path": { "type": "string", "pattern": "^sources/[^/]+$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "byte_length": { "type": "integer", "minimum": 1 },
+        "page_count": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["exact", "changed", "unavailable"] }
+      },
+      "additionalProperties": false
+    },
+    "reading_resume": {
+      "type": "object",
+      "required": ["chapter_id", "physical_page", "position"],
+      "properties": {
+        "chapter_id": { "$ref": "#/$defs/id" },
+        "physical_page": { "type": "integer", "minimum": 1 },
+        "position": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "study_progress": {
+      "type": "object",
+      "required": ["chapter_id", "physical_page", "position", "completed", "updated_at"],
+      "properties": {
+        "chapter_id": { "$ref": "#/$defs/id" },
+        "physical_page": { "type": "integer", "minimum": 1 },
+        "position": { "type": "number", "minimum": 0, "maximum": 1 },
+        "completed": { "type": "boolean" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "highlight": {
+      "type": "object",
+      "required": ["highlight_id", "anchor", "created_at"],
+      "properties": {
+        "highlight_id": { "$ref": "#/$defs/id" },
+        "anchor": { "$ref": "#/$defs/source_anchor" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "comment": {
+      "type": "object",
+      "required": ["comment_id", "text", "anchor", "created_at"],
+      "properties": {
+        "comment_id": { "$ref": "#/$defs/id" },
+        "text": { "type": "string", "minLength": 1 },
+        "anchor": { "$ref": "#/$defs/source_anchor" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["candidate_id", "kind", "comment_id", "anchor", "status", "created_at"],
+      "properties": {
+        "candidate_id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["question", "misconception"] },
+        "concept_id": { "$ref": "#/$defs/id" },
+        "comment_id": { "$ref": "#/$defs/id" },
+        "anchor": { "$ref": "#/$defs/source_anchor" },
+        "status": { "const": "open" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "conversation_turn": {
+      "type": "object",
+      "required": ["turn_id", "speaker", "text", "created_at"],
+      "properties": {
+        "turn_id": { "$ref": "#/$defs/id" },
+        "speaker": { "enum": ["learner", "tutor"] },
+        "text": { "type": "string", "minLength": 1 },
+        "anchor": { "$ref": "#/$defs/source_anchor" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "workspace_summary": {
+      "type": "object",
+      "required": ["path", "name", "topic_count"],
+      "properties": {
+        "path": { "$ref": "#/$defs/id" },
+        "name": { "$ref": "#/$defs/id" },
+        "topic_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "topic_summary": {
+      "type": "object",
+      "required": ["path", "slug", "title", "sources"],
+      "properties": {
+        "path": { "$ref": "#/$defs/id" },
+        "slug": { "$ref": "#/$defs/id" },
+        "title": { "$ref": "#/$defs/id" },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/id" } }
+      },
+      "additionalProperties": false
+    },
+    "workspace_list": {
+      "type": "object",
+      "required": ["schema_version", "workspaces"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "workspaces": { "type": "array", "items": { "$ref": "#/$defs/workspace_summary" } }
+      },
+      "additionalProperties": false
+    },
+    "topic_list": {
+      "type": "object",
+      "required": ["schema_version", "workspace", "topics"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "workspace": { "$ref": "#/$defs/id" },
+        "topics": { "type": "array", "items": { "$ref": "#/$defs/topic_summary" } }
+      },
+      "additionalProperties": false
+    },
+    "topic_snapshot": {
+      "type": "object",
+      "required": ["schema_version", "topic", "active_document", "resume", "study"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "topic": { "$ref": "#/$defs/topic_summary" },
+        "active_document": { "oneOf": [{ "$ref": "#/$defs/document_identity" }, { "type": "null" }] },
+        "resume": { "oneOf": [{ "$ref": "#/$defs/reading_resume" }, { "type": "null" }] },
+        "study": {
+          "type": "object",
+          "required": ["progress_count", "highlight_count", "comment_count", "candidate_count", "progress", "highlights", "comments", "candidates", "conversation"],
+          "properties": {
+            "progress_count": { "type": "integer", "minimum": 0 },
+            "highlight_count": { "type": "integer", "minimum": 0 },
+            "comment_count": { "type": "integer", "minimum": 0 },
+            "candidate_count": { "type": "integer", "minimum": 0 },
+            "progress": { "type": "array", "items": { "$ref": "#/$defs/study_progress" } },
+            "highlights": { "type": "array", "items": { "$ref": "#/$defs/highlight" } },
+            "comments": { "type": "array", "items": { "$ref": "#/$defs/comment" } },
+            "candidates": { "type": "array", "items": { "$ref": "#/$defs/candidate" } },
+            "conversation": { "type": "array", "items": { "$ref": "#/$defs/conversation_turn" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "projection_snapshot": {
+      "type": "object",
+      "required": ["schema_version", "topic", "as_of", "projection"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "topic": { "$ref": "#/$defs/id" },
+        "as_of": { "type": "string", "format": "date-time" },
+        "projection": { "$ref": "#/$defs/topic_projection" }
+      },
+      "additionalProperties": false
+    },
+    "topic_projection": {
+      "type": "object",
+      "required": ["schema_version", "topic", "as_of", "concepts", "questions", "misconceptions", "review_queue", "review_history", "tutor_actions", "applied_corrections", "promotion_candidates"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "topic": { "type": "string", "minLength": 1 },
+        "as_of": { "type": "string", "format": "date-time" },
+        "concepts": { "type": "array", "items": { "type": "object" } },
+        "questions": { "type": "array", "items": { "type": "object" } },
+        "misconceptions": { "type": "array", "items": { "type": "object" } },
+        "review_queue": { "type": "array", "items": { "type": "object" } },
+        "review_history": { "type": "array", "items": { "type": "object" } },
+        "tutor_actions": { "type": "array", "items": { "type": "object" } },
+        "applied_corrections": { "type": "array", "items": { "type": "object" } },
+        "promotion_candidates": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "tutor_decision": {
+      "type": "object",
+      "required": ["action", "reason_codes", "evidence_event_ids"],
+      "properties": {
+        "action": { "enum": ["elicit_attempt", "give_hint", "explain_bottleneck", "ask_due_review", "schedule_review", "complete"] },
+        "concept_id": { "$ref": "#/$defs/id" },
+        "question_id": { "$ref": "#/$defs/id" },
+        "due_at": { "type": "string", "format": "date-time" },
+        "reason_codes": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "evidence_event_ids": { "type": "array", "items": { "$ref": "#/$defs/id" } }
+      },
+      "additionalProperties": false
+    },
+    "command_receipt": {
+      "type": "object",
+      "required": ["schema_version", "request_id", "command", "status", "committed_at", "result"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "request_id": { "$ref": "#/$defs/id" },
+        "command": { "$ref": "#/$defs/id" },
+        "status": { "const": "committed" },
+        "committed_at": { "type": "string", "format": "date-time" },
+        "result": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

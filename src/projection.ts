@@ -5,7 +5,7 @@ import { compareRfc3339EventOrder, compareRfc3339Instants, isRfc3339DateTime } f
 import { assertEvent } from "./schema.ts";
 import type { Assistance, LedgerEvent } from "./types.ts";
 
-interface ConceptState {
+export interface ConceptState {
   concept_id: string;
   title: string;
   status: "introduced" | "developing" | "stable";
@@ -21,7 +21,7 @@ interface ConceptState {
   state_history: Array<{ status: "introduced" | "developing" | "stable"; evidence_event_ids: string[] }>;
 }
 
-interface QuestionState {
+export interface QuestionState {
   question_id: string;
   concept_id: string;
   prompt: string;
@@ -30,7 +30,7 @@ interface QuestionState {
   attempts: Array<{ event_id: string; answer: string; correct: boolean; assistance: Assistance; occurred_at: string }>;
 }
 
-interface MisconceptionState {
+export interface MisconceptionState {
   misconception_id: string;
   concept_id: string;
   description: string;
@@ -40,7 +40,7 @@ interface MisconceptionState {
   evidence_event_ids: string[];
 }
 
-interface ReviewState {
+export interface ReviewState {
   concept_id: string;
   due_at: string;
   status: "scheduled" | "due" | "completed";

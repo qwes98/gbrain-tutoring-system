@@ -20,7 +20,7 @@ Operate one deterministic tutoring turn against a topic workspace. The CLI owns 
 
 ## When to Use
 
-Use this skill when asked to continue, inspect, or run a tutoring topic stored by GBrain Tutoring System v0.1, or when asked which single tutoring action is warranted by its ledger.
+Use this skill when asked to continue, inspect, or run a tutoring topic stored by GBrain Tutoring System v0.1 or later, or when asked which single tutoring action is warranted by its ledger.
 
 ## Prerequisites
 

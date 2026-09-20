@@ -10,7 +10,10 @@
     "topic": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
     "type": { "enum": ["concept.declared", "question.asked", "attempt.recorded", "evidence.recorded", "misconception.observed", "misconception.resolved", "review.scheduled", "tutor.action", "event.corrected"] },
     "occurred_at": { "type": "string", "format": "date-time" },
-    "data": { "type": "object" }
+    "data": { "type": "object" },
+    "client_request_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "client_request_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "command_receipt": { "type": "object" }
   },
   "additionalProperties": false,
   "allOf": [{

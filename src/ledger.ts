@@ -30,8 +30,11 @@ export interface ReadLedgerOptions {
   containmentRoot?: string;
 }
 export interface ReadLedgerResult { events: LedgerEvent[]; recovered_truncated_tail: boolean; truncated_tail: string | null; }
-export interface LedgerTransaction<T> { event: LedgerEvent; value: T; }
+export interface LedgerTransaction<T> { event?: LedgerEvent; value: T; }
 export interface LedgerTransactionOptions { afterLedgerParentOpen?: () => void; }
+
+export interface AppendOnlyRecord { id: string; }
+export interface AppendOnlyTransaction<TRecord extends AppendOnlyRecord, TValue> { record?: TRecord; value: TValue; }
 
 interface LockOwner {
   token: string;
@@ -343,6 +346,51 @@ export function readLedger(path: string, options: ReadLedgerOptions = {}): ReadL
   }
 }
 
+function parseAppendOnlyRecords<TRecord extends AppendOnlyRecord>(
+  raw: string,
+  path: string,
+  parseRecord: (value: unknown) => TRecord,
+): TRecord[] {
+  if (raw.length === 0) return [];
+  if (!raw.endsWith("\n")) throw new Error(`append-only log has an unterminated final record: ${path}`);
+  const records: TRecord[] = [];
+  const ids = new Set<string>();
+  const lines = raw.slice(0, -1).split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.length === 0) throw new Error(`blank JSONL record at line ${index + 1}: ${path}`);
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { throw new Error(`invalid JSONL at line ${index + 1}: ${path}`); }
+    const record = parseRecord(value);
+    if (ids.has(record.id)) throw new Error(`duplicate record id ${record.id} at line ${index + 1}`);
+    ids.add(record.id);
+    records.push(record);
+  }
+  return records;
+}
+
+export function readAppendOnlyJsonl<TRecord extends AppendOnlyRecord>(
+  path: string,
+  parseRecord: (value: unknown) => TRecord,
+): TRecord[] {
+  const absolute = resolve(path);
+  assertLexicallyContainedPath(ledgerContainmentRoot(absolute), absolute);
+  let directory: AnchoredDirectory;
+  try { directory = openAnchoredDirectory(dirname(absolute)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  try {
+    let descriptor: number;
+    try { descriptor = openSync(directory.child(basename(absolute)), constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    try { return parseAppendOnlyRecords(decodeLedgerDescriptor(descriptor, absolute), absolute, parseRecord); }
+    finally { closeSync(descriptor); }
+  } finally { directory.close(); }
+}
+
 function validateAppend(current: ReadLedgerResult, event: LedgerEvent): void {
   assertEvent(event);
   if (current.events.some((existing) => existing.id === event.id)) throw new Error(`duplicate event id: ${event.id}`);
@@ -403,11 +451,13 @@ async function acquireLedgerInodeLock(descriptor: number, path: string): Promise
   };
 }
 
-export async function transactLedger<T>(
+export async function transactAppendOnlyJsonl<TRecord extends AppendOnlyRecord, TValue>(
   path: string,
-  transaction: (events: readonly LedgerEvent[]) => LedgerTransaction<T>,
+  parseRecord: (value: unknown) => TRecord,
+  validateCandidate: (current: readonly TRecord[], record: TRecord) => void,
+  transaction: (records: readonly TRecord[]) => AppendOnlyTransaction<TRecord, TValue>,
   options: LedgerTransactionOptions = {},
-): Promise<T> {
+): Promise<TValue> {
   const absolute = resolve(path);
   const containmentRoot = ledgerContainmentRoot(absolute);
   assertLexicallyContainedPath(containmentRoot, absolute);
@@ -415,7 +465,7 @@ export async function transactLedger<T>(
   let release: (() => void) | null = null;
   let releaseInode: (() => void) | null = null;
   let descriptor: number | null = null;
-  let value!: T;
+  let value!: TValue;
   let failed = false;
   let failure: unknown;
   try {
@@ -424,18 +474,22 @@ export async function transactLedger<T>(
     descriptor = opened.descriptor;
     releaseInode = await acquireLedgerInodeLock(descriptor, absolute);
     release = await acquireLock(absolute, directory, basename(absolute));
-    const current = parseLedger(decodeLedgerDescriptor(descriptor, absolute), absolute, {});
-    const selected = transaction(current.events);
-    validateAppend(current, selected.event);
-    const line = Buffer.from(`${JSON.stringify(selected.event)}\n`);
-    let offset = 0;
-    while (offset < line.length) {
-      const written = writeSync(descriptor, line, offset, line.length - offset);
-      if (written <= 0) throw new Error(`short append at offset ${offset}/${line.length}`);
-      offset += written;
+    const current = parseAppendOnlyRecords(decodeLedgerDescriptor(descriptor, absolute), absolute, parseRecord);
+    const selected = transaction(current);
+    if (selected.record) {
+      const record = parseRecord(selected.record);
+      validateCandidate(current, record);
+      if (current.some((existing) => existing.id === record.id)) throw new Error(`duplicate record id: ${record.id}`);
+      const line = Buffer.from(`${JSON.stringify(record)}\n`);
+      let offset = 0;
+      while (offset < line.length) {
+        const written = writeSync(descriptor, line, offset, line.length - offset);
+        if (written <= 0) throw new Error(`short append at offset ${offset}/${line.length}`);
+        offset += written;
+      }
+      fsyncSync(descriptor);
+      if (opened.created) directory.fsync();
     }
-    fsyncSync(descriptor);
-    if (opened.created) directory.fsync();
     value = selected.value;
   } catch (error) {
     failed = true;
@@ -452,6 +506,23 @@ export async function transactLedger<T>(
   if (failed) throw failure;
   if (cleanupFailure !== undefined) throw cleanupFailure;
   return value;
+}
+
+export async function transactLedger<T>(
+  path: string,
+  transaction: (events: readonly LedgerEvent[]) => LedgerTransaction<T>,
+  options: LedgerTransactionOptions = {},
+): Promise<T> {
+  return transactAppendOnlyJsonl(
+    path,
+    (value) => { assertEvent(value); return value; },
+    (events, event) => validateAppend({ events: [...events], recovered_truncated_tail: false, truncated_tail: null }, event),
+    (events) => {
+      const selected = transaction(events);
+      return { ...(selected.event ? { record: selected.event } : {}), value: selected.value };
+    },
+    options,
+  );
 }
 
 export async function appendEvent(path: string, event: LedgerEvent, options: LedgerTransactionOptions = {}): Promise<void> {

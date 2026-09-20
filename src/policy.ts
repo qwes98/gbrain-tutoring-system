@@ -1,15 +1,8 @@
 import type { TopicProjection } from "./projection.ts";
 import { compareRfc3339Instants } from "./json-schema.ts";
+import type { TutorDecision } from "./contracts.ts";
 
-export type TutorAction = "elicit_attempt" | "give_hint" | "explain_bottleneck" | "ask_due_review" | "schedule_review" | "complete";
-export interface TutorDecision {
-  action: TutorAction;
-  concept_id?: string;
-  question_id?: string;
-  due_at?: string;
-  reason_codes: string[];
-  evidence_event_ids: string[];
-}
+export type { TutorAction, TutorDecision } from "./contracts.ts";
 
 export function selectTutorAction(state: TopicProjection): TutorDecision {
   const due = state.review_queue.filter((review) => review.status === "due")

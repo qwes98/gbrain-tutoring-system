@@ -2,7 +2,7 @@
 
 ## Files
 
-Each repository has a versioned `gbrain-tutor.json`, the published event schema, and topic directories. Each topic contains copied local sources, `ledger/events.jsonl`, disposable projections, and GBrain candidate exports.
+Each repository has a versioned `gbrain-tutor.json`, the published event schema, and topic directories. Each topic contains copied local sources, `ledger/events.jsonl`, the separate `study/events.jsonl` study plane, disposable projections, and GBrain candidate exports.
 
 The ledger is the system of record. The bundled `schemas/ledger-event.schema.json` is the runtime v1 contract; workspace initialization publishes an identical snapshot for tools and operators. Each append validates against that bundled schema, validates the candidate replay while holding a cross-process lock, checks all prior IDs, writes one complete JSONL record with append semantics, fsyncs it, and releases the lock. Policy-driven `next` calls hold that same lock across projection, selection, and `tutor.action` append, so concurrent callers reselect against the committed predecessor. Correction candidates are replayed at every distinct affected event instant so a later winner cannot mask an invalid historical interval. The lock combines a kernel lock on the opened ledger inode with immutable, atomically published per-owner choosing/ticket entries, so replacing the ticket directory cannot split transactions on the same ledger. Stale ownership requires age plus a dead process or changed process-start identity; removal pins the inspected inode and full owner bytes, renames it to a private non-ticket claim, and unlinks only that exact owner. A correction is an `event.corrected` record carrying replacement data for an earlier event. The earlier line remains unchanged; the correction with the latest instant wins, with event ID as the deterministic tie-break.
 
@@ -28,6 +28,16 @@ The policy chooses exactly one action in this order:
 6. Completion when no actionable bottleneck exists.
 
 Every decision includes inspectable `reason_codes` and `evidence_event_ids`. Due reviews are ordered by parsed instants, not timestamp text. The CLI appends the decision as `tutor.action` before returning it, and the event schema requires fields appropriate to each action.
+
+## App contract, commands, and study state
+
+`schemas/app-contract.v1.schema.json` is the versioned application boundary. Workspace lists, topic lists, topic snapshots, projection snapshots, tutor decisions, and command receipts validate against it, so a client never reads generation directories or internal projection files.
+
+Mutating commands carry a client request key and a payload hash. Replaying a committed key returns the stored receipt without appending a second record; reusing a key for a different command or payload is rejected. Tutor selection and its `tutor.action` append happen inside one ledger transaction, so a retry after a lost response cannot advance the policy twice.
+
+Study state is a second append-only journal at `study/events.jsonl`. It holds the registered PDF identity, reading progress, highlights, comments, comment-derived question or misconception candidates, and conversation turns. Anchors record document identity and sha256, the physical page, an optional display label, text, region, or page-level scope, and an `exact`, `ambiguous`, or `unavailable` status. Reopening a topic rehashes the owned source and reports `exact`, `changed`, or `unavailable` without rewriting stored anchors. Nothing in the study plane changes concept state; only qualifying ledger evidence does, and every transition still cites its evidence event IDs.
+
+Context packets are a pure function of the question, supplied source excerpts, study state, and a projection. Items are labeled `source_excerpt`, `learner_comment`, `reading_progress`, `prior_conversation`, `ledger_evidence`, or `projection_state`, anchors survive intact, and item and character bounds are enforced with explicit omitted and truncated counts.
 
 ## Proven GBrain principles reused
 
