@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const included = new Set([".ts", ".json", ".md"]);
+const included = new Set([".ts", ".tsx", ".css", ".html", ".json", ".md"]);
 const ignored = new Set(["node_modules", "dist", ".git", ".omx", ".omc"]);
 const failures: string[] = [];
 

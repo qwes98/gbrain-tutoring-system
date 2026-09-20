@@ -55,7 +55,25 @@ gbrain-tutor next "$TOPIC" --request-id next-1 --at 2026-01-01T00:00:00Z
 gbrain-tutor receipt get "$TOPIC" --request-id next-1
 ```
 
-See [CONTRIBUTING](CONTRIBUTING.md), the [CLI reference](docs/cli.md), [learning model and storage boundaries](docs/learning-model.md), [architecture and event model](docs/architecture.md), [GBrain boundary](docs/gbrain-integration.md), the [Bun runtime ADR](docs/adr/0001-use-bun-runtime.md), and the [design-only PDF study workspace requirements](docs/study-workspace/README.md).
+See [CONTRIBUTING](CONTRIBUTING.md), the [CLI reference](docs/cli.md), [learning model and storage boundaries](docs/learning-model.md), [architecture and event model](docs/architecture.md), [GBrain boundary](docs/gbrain-integration.md), the [Bun runtime ADR](docs/adr/0001-use-bun-runtime.md), and the [isolated PDF study workspace prototype](docs/study-workspace/README.md).
+
+## PDF study workspace prototype
+
+The separately runnable prototype renders a user-selected local PDF beside a deterministic mock tutor surface:
+
+```bash
+bun install
+bun run study:dev
+```
+
+For a production-build preview:
+
+```bash
+bun run build
+bun run study:preview
+```
+
+This is disposable in-memory UI state, not a live Hermes or GBrain integration. It does not read or write ledger events, projections, topic files, or promotion candidates. The future core adapter is constrained by the versioned `TutorCorePort`; see the [workspace boundaries and commands](docs/study-workspace/README.md) and [DeepTutor reference assessment](docs/study-workspace/deeptutor-reference.md).
 
 ## Verification
 

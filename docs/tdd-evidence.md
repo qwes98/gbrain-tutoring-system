@@ -41,13 +41,18 @@ Each behavior was introduced by a focused test, executed to observe the expected
 | Tutor-action relationship integrity | focused projection RED accepted a question from a different concept | replay requires each question action's question to belong to its cited concept; `1 pass, 0 fail` |
 | Delayed action scheduling | focused projection RED accepted a `schedule_review` action whose due instant equaled the action instant | replay requires the scheduled due instant to be strictly later; `1 pass, 0 fail` |
 | Exact fractional instant ordering | focused projection/policy RED treated `.0001Z` and `.0002Z` as the same millisecond, selecting the wrong correction and due review | exact arbitrary-precision RFC 3339 comparison governs cutoffs, correction precedence, dependencies, review status, and policy order; `2 pass, 0 fail, 6 expect()` |
+| Tutor application port | `bun test apps/study-workspace/test/tutor-core.test.ts` → `Cannot find module '../src/core/tutor-core-port.ts'`; review guard later failed because a prohibited `status` field remained | versioned port and deterministic mock context/turn response without a learning-status marker; `1 pass, 0 fail` |
+| Independent annotations | `bun test apps/study-workspace/test/annotations.test.ts` → `Cannot find module '../src/annotations.ts'` | highlight and comment creation, optional reference, and independent deletion; `2 pass, 0 fail` |
+| Source anchors | focused source-anchor runs first failed with a missing module, then accepted page `0`, then reported exact precision without rectangles | positive pages, cleaned quotes, page fallback, cloned normalized rectangles, and honest precision; `3 pass, 0 fail` |
+| PDF page navigation | `bun test apps/study-workspace/test/navigation.test.ts` → `Cannot find module '../src/navigation.ts'`; the source-jump regression then failed because navigation helpers did not exist | bounded previous/next movement plus exact saved-anchor restoration; `2 pass, 0 fail` |
+| UI/core isolation | `bun test apps/study-workspace/test/ui-boundary.test.ts` → missing `src/ui` directory; the accessibility hardening RED found no selected-state signal | recursively scanned UI modules stay inside the app boundary and mobile pane controls expose selected state; `1 pass, 0 fail` |
 
 Final consolidated run:
 
 ```text
 $ bun test
-60 pass
+87 pass
 0 fail
-185 expect() calls
-Ran 60 tests across 10 files.
+312 expect() calls
+Ran 87 tests across 17 files.
 ```
