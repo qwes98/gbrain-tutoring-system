@@ -2,7 +2,7 @@
 
 **Delivery status: isolated disposable prototype.** The separately runnable app in `apps/study-workspace` proves local PDF rendering, selection/source capture, independent annotations, responsive document/tutor navigation, and an application-facing tutor port. It does not change the product requirements or claim a production integration.
 
-The desktop layout places a selectable PDF workspace beside a tutor conversation. Narrow screens use explicit Document and Tutor tabs. PDF bytes stay in the browser session, and all annotations and messages are in memory.
+The desktop layout places a selectable PDF workspace beside a tutor conversation. Narrow screens use explicit Document and Tutor tabs. PDF bytes stay in the browser session, and all annotations and messages are in memory. Local intake is limited to 20 MB and requires a `.pdf` extension, a `%PDF-x.y` header beginning at byte 0 through 1023, and a final `startxref`/`%%EOF` candidate that points to plausible classic-xref or xref-stream syntax. Cross-reference offsets are tried relative to the detected header first, with an absolute-offset compatibility fallback, and at most 128 distinct trailer candidates are inspected. This is a bounded intake heuristic, not complete PDF-spec validation. An explicit non-PDF media type is rejected; an empty browser-provided media type is accepted when the extension and bytes validate.
 
 ## Run
 
@@ -33,7 +33,7 @@ bun run --cwd apps/study-workspace build
 
 - Vite, React, and React-PDF are the thinnest maintainable isolated stack here: the repository has no existing browser application to extend, while the DeepTutor reference confirms PDF.js canvas/text-layer behavior without justifying its backend and deployment surface. React-PDF packages that PDF.js behavior without coupling the headless root `src/` core to UI code.
 - `TutorCorePort` is versioned as `gbrain-tutor-core/v1`; `MockTutorCore` is deterministic fixture behavior, not a live Hermes transport.
-- UI modules do not import the root ledger, projections, topic internals, `events.jsonl`, or projection-generation files.
+- A lexical architecture test recursively scans production TypeScript and JavaScript modules for literal imports and named direct APIs that cross into the root ledger, projections, filesystem, undeclared internal-core modules, `events.jsonl`, or projection-generation files. This defense-in-depth guard is not a runtime sandbox and cannot prove the absence of computed or generated access.
 - The future `GBrainTutorCore` adapter belongs behind `TutorCorePort`. It will translate stable application DTOs to approved core contracts at the composition boundary; replacing the adapter must not require UI imports from core internals.
 - Annotation state is explicitly disposable. The prototype does not invent a ledger event, projection, persistence, synchronization, or migration schema.
 - Source anchors are prototype values: document fingerprint, one-based page, cleaned quote, and page-normalized selection rectangles when the browser exposes them.
