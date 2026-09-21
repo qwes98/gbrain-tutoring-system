@@ -61,13 +61,14 @@ Current-state consolidated run on the rebased HEAD:
 
 ```text
 $ bun test test apps/study-workspace/test
-122 pass
+129 pass
+1 skip
 0 fail
-469 expect() calls
-Ran 122 tests across 25 files.
+496 expect() calls
+Ran 130 tests across 26 files.
 ```
 
-Historical pre-rebase cycle-four totals were `113 pass, 0 fail, 383 expect()` across 19 files. Historical cycle-three totals were `110 pass, 0 fail, 378 expect()` on each of two immediate complete runs. The preceding cycle-three attempt observed the known projection concurrency flake once (`109 pass, 1 fail, 375 expect()` when one of eight writer processes exited `1`). No projection code was modified in either cycle.
+These historical results refer to the earlier prototype-only rebase recorded on `qwes98/prototype-study-workspace` at `7b107e7`, before its commits were replayed onto the public-ready `main` in this branch. Its pre-rebase cycle-four totals were `113 pass, 0 fail, 383 expect()` across 19 files. Historical cycle-three totals were `110 pass, 0 fail, 378 expect()` on each of two immediate complete runs. The preceding cycle-three attempt observed the known projection concurrency flake once (`109 pass, 1 fail, 375 expect()` when one of eight writer processes exited `1`). No projection code was modified in either cycle.
 
 Final real-browser acceptance used the local 19-page system PDF. Malformed bytes were rejected before the PDF renderer mounted; selecting the same file began a fresh document generation; desktop and 390-pixel mobile source jumps both revealed and focused the deep locator; the browser reported zero console errors.
 
