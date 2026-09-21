@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 const hermesAgentPythonPath = process.env.HERMES_AGENT_PYTHONPATH;
 const hermesIntegrationTest = hermesAgentPythonPath ? test : test.skip;
+
+function hermesPythonPath(hermesPath: string | undefined, existingPath: string | undefined): string {
+  return [hermesPath, existingPath]
+    .filter((path): path is string => Boolean(path))
+    .join(delimiter);
+}
+
+const hermesLoaderPythonPath = hermesPythonPath(hermesAgentPythonPath, process.env.PYTHONPATH);
 
 describe("Hermes tutoring skill", () => {
   const roots: string[] = [];
@@ -21,6 +29,11 @@ describe("Hermes tutoring skill", () => {
     expect(content).toContain("gbrain-tutor export-gbrain");
     expect(content).toContain("Never write to GBrain directly");
     expect(content).toContain("## Verification");
+  });
+
+  test("keeps the existing Python path after the Hermes checkout path", () => {
+    expect(hermesPythonPath("/checkout/hermes-agent", "/existing/python-modules"))
+      .toBe(`/checkout/hermes-agent${delimiter}/existing/python-modules`);
   });
 
   hermesIntegrationTest("an installed skill loads through Hermes and schedules a historical decision at the turn time", async () => {
@@ -44,7 +57,7 @@ describe("Hermes tutoring skill", () => {
       env: {
         ...process.env,
         HERMES_HOME: hermesHome,
-        PYTHONPATH: hermesAgentPythonPath,
+        PYTHONPATH: hermesLoaderPythonPath,
       },
       stdout: "pipe",
       stderr: "pipe",

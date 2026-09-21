@@ -67,7 +67,7 @@ bun run doctor
 bun run smoke
 ```
 
-The Hermes integration case is skipped unless its Python package is available explicitly. Run it against a real Hermes checkout with:
+The Hermes integration case is skipped when `HERMES_AGENT_PYTHONPATH` is unset. Run it against a real Hermes checkout with:
 
 ```bash
 HERMES_AGENT_PYTHONPATH=/path/to/hermes-agent bun test test/hermes-skill.test.ts

@@ -20,6 +20,7 @@
     "skills",
     "docs",
     "scripts/smoke.sh",
+    "test/fixtures/concurrency-lecture.md",
     "CONTRIBUTING.md",
     "SECURITY.md"
   ],
