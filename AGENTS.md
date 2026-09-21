@@ -5,7 +5,7 @@ Build an executable, file-first learning ledger and rule-based tutor policy that
 ## Required workflow
 
 - Use strict vertical-slice TDD: write one failing behavior test, run it and observe the expected failure, implement the minimum behavior, rerun, then continue.
-- Before designing adapters, inspect `../gbrain` for proven patterns in CLI structure, atomic writes, append-only logs, schemas, provenance, projections, and tests. Reuse principles, not private implementation details.
+- Before designing adapters, inspect an available local GBrain checkout for proven patterns in CLI structure, atomic writes, append-only logs, schemas, provenance, projections, and tests. Reuse principles, not private implementation details.
 - Keep the core deterministic and offline. LLMs may execute the policy but must not be required to validate, append, replay, or project ledger state.
 - Do not add learner-directed comments or learning-status markers to product code or commit messages.
 - Preserve append-only event history. Corrections are new events, never rewrites.

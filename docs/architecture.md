@@ -41,4 +41,4 @@ Context packets are a pure function of the question, supplied source excerpts, s
 
 ## Proven GBrain principles reused
 
-The design follows patterns inspected in `../gbrain`: Bun/TypeScript command modules, checked-in strict schemas, append-only JSONL, kernel-atomic locking around read/modify/write work, fsync plus atomic publication for derived files, deterministic replay, and explicit provenance-preserving promotion boundaries. The tutoring implementation is independent and does not copy private GBrain modules or add GBrain tables.
+The design follows patterns inspected in a local GBrain checkout: Bun/TypeScript command modules, checked-in strict schemas, append-only JSONL, kernel-atomic locking around read/modify/write work, fsync plus atomic publication for derived files, deterministic replay, and explicit provenance-preserving promotion boundaries. The tutoring implementation is independent and does not copy private GBrain modules or add GBrain tables.

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gbrain.local/schemas/tutoring-ledger-event-v1.json",
+  "$id": "https://raw.githubusercontent.com/qwes98/gbrain-tutoring-system/main/schemas/ledger-event.schema.json",
   "title": "GBrain tutoring ledger event",
   "type": "object",
   "required": ["schema_version", "id", "topic", "type", "occurred_at", "data"],

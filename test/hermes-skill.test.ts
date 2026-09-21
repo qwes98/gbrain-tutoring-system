@@ -3,6 +3,9 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const hermesAgentPythonPath = process.env.HERMES_AGENT_PYTHONPATH;
+const hermesIntegrationTest = hermesAgentPythonPath ? test : test.skip;
+
 describe("Hermes tutoring skill", () => {
   const roots: string[] = [];
   afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -20,7 +23,7 @@ describe("Hermes tutoring skill", () => {
     expect(content).toContain("## Verification");
   });
 
-  test("an installed skill loads through Hermes and schedules a historical decision at the turn time", async () => {
+  hermesIntegrationTest("an installed skill loads through Hermes and schedules a historical decision at the turn time", async () => {
     const root = mkdtempSync(join(tmpdir(), "gbrain-hermes-installed-"));
     roots.push(root);
     const hermesHome = join(root, "hermes-home");
@@ -41,7 +44,7 @@ describe("Hermes tutoring skill", () => {
       env: {
         ...process.env,
         HERMES_HOME: hermesHome,
-        PYTHONPATH: "/opt/hermes-agent",
+        PYTHONPATH: hermesAgentPythonPath,
       },
       stdout: "pipe",
       stderr: "pipe",

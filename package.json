@@ -1,9 +1,28 @@
 {
   "name": "gbrain-tutoring-system",
   "version": "0.2.0",
+  "description": "A deterministic, offline tutoring ledger and rule-based tutor CLI for GBrain workflows.",
   "type": "module",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qwes98/gbrain-tutoring-system.git"
+  },
+  "homepage": "https://github.com/qwes98/gbrain-tutoring-system#readme",
+  "bugs": {
+    "url": "https://github.com/qwes98/gbrain-tutoring-system/issues"
+  },
+  "files": [
+    "src",
+    "schemas",
+    "templates",
+    "skills",
+    "docs",
+    "scripts/smoke.sh",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
   "bin": {
     "gbrain-tutor": "src/cli.ts"
   },
