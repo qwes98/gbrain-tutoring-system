@@ -69,9 +69,11 @@ describe("open-source hygiene", () => {
       files?: string[];
     };
     const gitignore = readFileSync(join(repositoryRoot, ".gitignore"), "utf8").split("\n");
+    const lintScript = readFileSync(join(repositoryRoot, "scripts", "lint.ts"), "utf8");
 
     expect(gitignore).toContain(".omx/");
     expect(gitignore).toContain(".omc/");
+    expect(lintScript).toContain('".omx", ".omc"');
     expect(packageJson.private).toBe(true);
     expect(packageJson.description).toBeTruthy();
     expect(packageJson.repository).toEqual({
@@ -109,6 +111,8 @@ describe("open-source hygiene", () => {
 
     expect(security).toContain("qwes8873@gmail.com");
     expect(security).not.toContain("currently supported line");
+    expect(security).toContain("reports received by email");
+    expect(security).toContain("private GitHub security advisory");
     expect(readme).toContain("skipped when `HERMES_AGENT_PYTHONPATH` is unset");
     for (const documentation of [readme, contributing]) {
       expect(documentation).toContain("`git`, `npm`, and `tar`");
@@ -133,6 +137,7 @@ describe("open-source hygiene", () => {
       const listing = Bun.spawnSync(["tar", "-tzf", archive], { stdout: "pipe", stderr: "pipe" });
       expect(listing.exitCode, listing.stderr.toString()).toBe(0);
       expect(listing.stdout.toString()).not.toContain(".omx");
+      expect(listing.stdout.toString()).not.toContain(".omc");
 
       const extract = Bun.spawnSync(["tar", "-xzf", archive, "-C", packRoot], {
         stdout: "pipe",
