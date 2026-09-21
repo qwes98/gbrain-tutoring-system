@@ -8,7 +8,8 @@ A deterministic, offline tutoring ledger with append-only events, replayable pro
 - [Bun](https://bun.sh/) 1.3 or newer for installing, building, testing, and running the CLI.
 - Bash for `scripts/smoke.sh`.
 - `strace` for the ledger durability test.
-- Python 3 only for the optional real Hermes integration test.
+- `git`, `npm`, and `tar` for the full test and package-verification workflow.
+- Python 3 only for the optional real Hermes integration test; `python3` is the default executable.
 
 ## Install
 
@@ -72,5 +73,7 @@ The Hermes integration case is skipped when `HERMES_AGENT_PYTHONPATH` is unset. 
 ```bash
 HERMES_AGENT_PYTHONPATH=/path/to/hermes-agent bun test test/hermes-skill.test.ts
 ```
+
+Set `HERMES_AGENT_PYTHON` to override the default `python3` executable when needed.
 
 The v0.1 acceptance test drives the CLI against `test/fixtures/concurrency-lecture.md` and exercises initialization, source capture, attempts and evidence, policy selection, generation-consistent projection rebuild, review scheduling, and promotion export. The v0.2 acceptance test in `test/headless-pdf-v0.2.acceptance.test.ts` drives the CLI against `test/fixtures/headless-study.pdf` for PDF registration, chapter progress and resume, independent highlights and comments across every anchor class, a confusion candidate that leaves concept state unchanged, retry-safe commands and receipts, context packet determinism, qualifying evidence, projection rebuild from an empty derived-state directory, due review completion, changed-source detection, and a non-mutating GBrain export. The Hermes test installs the complete skill into an isolated personal home, loads it through Hermes, and drives the real CLI through a historical review workflow.

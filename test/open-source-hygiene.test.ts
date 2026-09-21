@@ -18,8 +18,14 @@ function repositoryFiles(): string[] {
 }
 
 function containsPersonalMachinePath(content: string): boolean {
-  const unixPrefixes = ["/ho" + "me/", "/Us" + "ers/", "/me" + "dia/"];
-  const windowsUserPath = /[A-Za-z]:(?:\/(?:Users|Documents and Settings)\/|\\+(?:Users|Documents and Settings)\\+)/;
+  const unixPrefixes = [
+    "/ho" + "me/",
+    "/Us" + "ers/",
+    "/me" + "dia/",
+    "/ro" + "ot/",
+    "/var/fol" + "ders/",
+  ];
+  const windowsUserPath = /[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+/i;
   return unixPrefixes.some((prefix) => content.includes(prefix)) || windowsUserPath.test(content);
 }
 
@@ -39,11 +45,15 @@ describe("open-source hygiene", () => {
     expect(failures).toEqual([]);
   });
 
-  test("personal path detection covers slash and escaped Windows user paths", () => {
+  test("personal path detection covers portable Unix and Windows user-path forms", () => {
     const samples = [
       ["C:", "/", "Us" + "ers", "/", "example/project"].join(""),
       ["D:", "\\", "Documents and Settings", "\\", "example\\project"].join(""),
       ["E:", "\\\\", "Users", "\\\\", "example\\\\project"].join(""),
+      ["c:", "\\", "us" + "ers", "/", "example\\project"].join(""),
+      ["F:", "/", "USERS", "\\", "example/project"].join(""),
+      ["/", "ro" + "ot", "/project"].join(""),
+      ["/var/", "fol" + "ders", "/ab/session/project"].join(""),
     ];
 
     for (const sample of samples) expect(containsPersonalMachinePath(sample)).toBe(true);
@@ -61,6 +71,7 @@ describe("open-source hygiene", () => {
     const gitignore = readFileSync(join(repositoryRoot, ".gitignore"), "utf8").split("\n");
 
     expect(gitignore).toContain(".omx/");
+    expect(gitignore).toContain(".omc/");
     expect(packageJson.private).toBe(true);
     expect(packageJson.description).toBeTruthy();
     expect(packageJson.repository).toEqual({
@@ -94,10 +105,16 @@ describe("open-source hygiene", () => {
   test("security and optional Hermes documentation describe available paths accurately", () => {
     const security = readFileSync(join(repositoryRoot, "SECURITY.md"), "utf8");
     const readme = readFileSync(join(repositoryRoot, "README.md"), "utf8");
+    const contributing = readFileSync(join(repositoryRoot, "CONTRIBUTING.md"), "utf8");
 
     expect(security).toContain("qwes8873@gmail.com");
     expect(security).not.toContain("currently supported line");
     expect(readme).toContain("skipped when `HERMES_AGENT_PYTHONPATH` is unset");
+    for (const documentation of [readme, contributing]) {
+      expect(documentation).toContain("`git`, `npm`, and `tar`");
+      expect(documentation).toContain("`HERMES_AGENT_PYTHON`");
+      expect(documentation).toContain("`python3`");
+    }
   });
 
   test("the extracted npm package completes its smoke workflow", () => {

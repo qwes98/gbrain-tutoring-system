@@ -4,7 +4,7 @@ Thank you for helping improve GBrain Tutoring System.
 
 ## Development setup
 
-Development requires Linux with procfs, Bun 1.3 or newer, Bash, and `strace`. Python 3 is needed only for the optional Hermes integration test.
+Development requires Linux with procfs, Bun 1.3 or newer, Bash, and `strace`. The full test and package-verification workflow also requires `git`, `npm`, and `tar`. Python 3 is needed only for the optional Hermes integration test; `python3` is the default executable.
 
 ```bash
 bun install
@@ -38,6 +38,8 @@ The Hermes integration case skips cleanly by default. To run it against a real l
 ```bash
 HERMES_AGENT_PYTHONPATH=/path/to/hermes-agent bun test test/hermes-skill.test.ts
 ```
+
+Set `HERMES_AGENT_PYTHON` to override the default `python3` executable when needed.
 
 Include tests for behavior changes and describe any platform-specific verification gaps in the pull request.
 
