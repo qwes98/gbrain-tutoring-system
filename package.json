@@ -24,16 +24,20 @@
     "CONTRIBUTING.md",
     "SECURITY.md"
   ],
+  "workspaces": ["apps/*"],
   "bin": {
     "gbrain-tutor": "src/cli.ts"
   },
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "test": "bun test test apps/study-workspace/test",
+    "typecheck": "tsc --noEmit && bun run --cwd apps/study-workspace typecheck",
     "lint": "bun run scripts/lint.ts",
-    "build": "bun build src/cli.ts --target=bun --outdir=dist",
+    "build": "bun run build:core && bun run --cwd apps/study-workspace build",
+    "build:core": "bun build src/cli.ts --target=bun --outdir=dist",
     "doctor": "bun src/cli.ts doctor",
-    "smoke": "bash scripts/smoke.sh"
+    "smoke": "bash scripts/smoke.sh",
+    "study:dev": "bun run --cwd apps/study-workspace dev",
+    "study:preview": "bun run --cwd apps/study-workspace preview"
   },
   "devDependencies": {
     "@types/bun": "latest",

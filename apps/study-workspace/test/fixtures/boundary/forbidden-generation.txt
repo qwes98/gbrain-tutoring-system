@@ -1,0 +1,1 @@
+const generation = "projections/generations/current.json";
