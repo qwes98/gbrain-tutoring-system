@@ -1,6 +1,6 @@
 # Vertical-slice TDD evidence
 
-Each behavior was introduced by a focused test, executed to observe the expected failure, implemented minimally, and rerun before the next slice. Commands ran from the repository root with Bun 1.4.2.
+Development used focused behavior-first slices. The rows below record observed RED/GREEN outputs; where a later assertion expanded behavior that was already implemented, the row says so rather than claiming an independent RED. Commands ran from the repository root with Bun 1.4.2.
 
 | Slice | RED command and observed failure | GREEN result |
 | --- | --- | --- |
@@ -46,13 +46,31 @@ Each behavior was introduced by a focused test, executed to observe the expected
 | Source anchors | focused source-anchor runs first failed with a missing module, then accepted page `0`, then reported exact precision without rectangles | positive pages, cleaned quotes, page fallback, cloned normalized rectangles, and honest precision; `3 pass, 0 fail` |
 | PDF page navigation | `bun test apps/study-workspace/test/navigation.test.ts` → `Cannot find module '../src/navigation.ts'`; the source-jump regression then failed because navigation helpers did not exist | bounded previous/next movement plus exact saved-anchor restoration; `2 pass, 0 fail` |
 | UI/core isolation | `bun test apps/study-workspace/test/ui-boundary.test.ts` → missing `src/ui` directory; the accessibility hardening RED found no selected-state signal | recursively scanned UI modules stay inside the app boundary and mobile pane controls expose selected state; `1 pass, 0 fail` |
+| PDF intake and malformed structure | `bun test apps/study-workspace/test/pdf-file.test.ts` → missing module (`0 pass, 1 fail, 1 error`); a later malformed-marker case failed (`4 pass, 1 fail, 6 expect()`) | initial intake reached `4 pass, 0 fail, 5 expect()`; structural rejection reached `5 pass, 0 fail, 6 expect()` |
+| PDF.js-compatible intake | compatibility cases for a bounded preamble, header whitespace, incremental trailers, trailing bytes, and empty picker MIME produced `5 pass, 3 fail, 10 expect()` | bounded header/trailer reads accept compatible PDFs while explicit non-PDF MIME and malformed structure remain rejected; `9 pass, 0 fail, 11 expect()` |
+| Tutor-session isolation and admission | the session gate initially had a missing module (`0 pass, 1 fail, 1 error`); accepted-only UI admission later produced `2 pass, 1 fail, 7 expect()` because the admission callback was not invoked | stale responses are ignored, overlapping turns are rejected, and only admitted turns may clear the draft or append the learner bubble; `3 pass, 0 fail, 8 expect()` (the overlap assertion expanded the existing gate and did not have a separate RED) |
+| Source/runtime validation | invalid page totals and rectangles produced `5 pass, 2 fail, 13 expect()`; foreign-document restoration produced `3 pass, 1 fail, 13 expect()`; null/clone-hostile sources and non-array rectangles later produced `5 pass, 2 fail, 21 expect()` | runtime guards reject invalid pages, documents, clones, and rectangle payloads without throwing; final focused navigation result `7 pass, 0 fail, 25 expect()` |
+| Exact source restoration | the first focused unit run failed on a missing export (`0 pass, 1 fail, 1 error`) | exact anchors restore a visible focused locator, while page-only anchors stay honest about precision; focused unit result `5 pass, 0 fail, 20 expect()` |
+| Recursive production boundary guard | the first adversarial fixture was missed (`1 pass, 1 fail, 17 expect()`); JavaScript-extension coverage then failed (`2 pass, 1 fail, 19 expect()`); an internal-core fixture exposed a stale fixture inventory (`2 pass, 1 fail, 14 expect()`) | recursive lexical scanning covers the declared import/API patterns and production JavaScript extensions; `3 pass, 0 fail, 21 expect()` |
+| Same-file document generation | browser acceptance failed because the successful picker retained `C:\\fakepath\\shared-mime-info-spec.pdf` | successful validation resets the picker, so choosing the same PDF creates a fresh document generation and clears the prior locator; final browser acceptance passed |
+| Classic xref subsection whitespace | `bun test apps/study-workspace/test/pdf-file.test.ts` rejected subsection headers with trailing horizontal whitespace before CR, LF, and CRLF; `9 pass, 1 fail, 12 expect()` | trailing spaces and tabs are accepted without weakening the existing malformed/truncated cases; `10 pass, 0 fail, 14 expect()`; the identified 429,828-byte real PDF validated and PDF.js loaded all 7 pages |
+| Bounded `startxref` candidates | an adversarial file with 300 distinct decoys was correctly rejected but caused 302 slice reads instead of the asserted maximum 130; `10 pass, 1 fail, 16 expect()` | validation checks at most 128 distinct candidates and rejects the decoys; `11 pass, 0 fail, 16 expect()` |
+| Header-relative cross-reference offsets | after correcting fixtures to encode offsets relative to `%PDF-`, classic and xref-stream-like preambles plus the byte-1023 boundary were rejected; `10 pass, 4 fail, 19 expect()` | the detected header offset is applied first with absolute fallback, byte 1023 is accepted, and byte 1024 is rejected; `14 pass, 0 fail, 21 expect()` |
 
-Final consolidated run:
+Current-state consolidated run on the rebased HEAD:
 
 ```text
-$ bun test
-87 pass
+$ bun test test apps/study-workspace/test
+122 pass
 0 fail
-312 expect() calls
-Ran 87 tests across 17 files.
+469 expect() calls
+Ran 122 tests across 25 files.
 ```
+
+Historical pre-rebase cycle-four totals were `113 pass, 0 fail, 383 expect()` across 19 files. Historical cycle-three totals were `110 pass, 0 fail, 378 expect()` on each of two immediate complete runs. The preceding cycle-three attempt observed the known projection concurrency flake once (`109 pass, 1 fail, 375 expect()` when one of eight writer processes exited `1`). No projection code was modified in either cycle.
+
+Final real-browser acceptance used the local 19-page system PDF. Malformed bytes were rejected before the PDF renderer mounted; selecting the same file began a fresh document generation; desktop and 390-pixel mobile source jumps both revealed and focused the deep locator; the browser reported zero console errors.
+
+The cycle-three browser rerun used the exact 429,828-byte review PDF: intake accepted it, PDF.js rendered all 7 pages, same-file reselection created a fresh generation, desktop and mobile deep-source restoration remained visible and focused, and the browser reported zero console errors.
+
+Cycle-four direct validation used that same review PDF without a prefix and with 1-, 512-, and 1023-byte prefixes. The validator accepted each file and PDF.js loaded all 7 pages; the validator separately enforced the tested byte-1024 header rejection boundary. The production browser build also accepted the 512-byte-prefixed file, rendered all 7 pages, rejected malformed bytes before mounting PDF.js, reset the picker, and reported zero console errors.

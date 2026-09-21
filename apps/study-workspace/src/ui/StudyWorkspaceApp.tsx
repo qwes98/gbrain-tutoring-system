@@ -1,4 +1,4 @@
-import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import "react-pdf/dist/Page/AnnotationLayer.css";
@@ -12,8 +12,10 @@ import {
   type AnnotationState,
 } from "../annotations.ts";
 import type { TutorContext, TutorCorePort } from "../core/tutor-core-port.ts";
-import { moveToAdjacentPage, restoreSourceNavigation } from "../navigation.ts";
+import { moveToAdjacentPage, restoreSourceNavigation, sourceLocatorRects } from "../navigation.ts";
+import { validatePdfFile } from "../pdf-file.ts";
 import { captureSourceAnchor, type NormalizedRect, type SourceAnchor } from "../source-anchor.ts";
+import { TutorTurnGate } from "../turn-session.ts";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -50,12 +52,14 @@ function normalizedSelectionRects(range: Range, pageElement: HTMLElement): Norma
   const clamp = (value: number) => Math.max(0, Math.min(1, value));
   return Array.from(range.getClientRects())
     .filter((rect) => rect.width > 0 && rect.height > 0)
-    .map((rect) => ({
-      x: clamp((rect.left - pageRect.left) / pageRect.width),
-      y: clamp((rect.top - pageRect.top) / pageRect.height),
-      width: clamp(rect.width / pageRect.width),
-      height: clamp(rect.height / pageRect.height),
-    }));
+    .map((rect) => {
+      const x = clamp((rect.left - pageRect.left) / pageRect.width);
+      const y = clamp((rect.top - pageRect.top) / pageRect.height);
+      const right = clamp((rect.right - pageRect.left) / pageRect.width);
+      const bottom = clamp((rect.bottom - pageRect.top) / pageRect.height);
+      return { x, y, width: right - x, height: bottom - y };
+    })
+    .filter((rect) => rect.width > 0 && rect.height > 0);
 }
 
 function sourceLabel(anchor: SourceAnchor): string {
@@ -65,6 +69,7 @@ function sourceLabel(anchor: SourceAnchor): string {
 
 export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
   const [file, setFile] = useState<File | null>(null);
+  const [fileGeneration, setFileGeneration] = useState(0);
   const [documentId, setDocumentId] = useState("local:unloaded");
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(0);
@@ -79,7 +84,12 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activePane, setActivePane] = useState<"document" | "tutor">("document");
+  const [turnPending, setTurnPending] = useState(false);
+  const [focusedSource, setFocusedSource] = useState<SourceAnchor | null>(null);
   const idCounter = useRef(0);
+  const intakeGeneration = useRef(0);
+  const turnGate = useRef(new TutorTurnGate());
+  const sourceTarget = useRef<HTMLSpanElement | null>(null);
   const readerWidth = useElementWidth(readerElement);
   const renderedWidth = Math.max(240, Math.min(900, Math.floor(readerWidth - 32)));
 
@@ -89,17 +99,76 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
   }, []);
 
   useEffect(() => {
-    void tutorCore.getContext().then(setContext).catch((reason: unknown) => setError(String(reason)));
+    let active = true;
+    void tutorCore.getContext()
+      .then((nextContext) => {
+        if (active) setContext(nextContext);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(String(reason));
+      });
+    return () => {
+      active = false;
+    };
   }, [tutorCore]);
 
-  const onDocumentLoad = useCallback((pdf: PDFDocumentProxy) => {
+  const focusSourceRegion = useCallback(() => {
+    if (!focusedSource) return;
+    requestAnimationFrame(() => {
+      sourceTarget.current?.focus({ preventScroll: true });
+      sourceTarget.current?.scrollIntoView({ behavior: "auto", block: "center", inline: "nearest" });
+    });
+  }, [focusedSource]);
+
+  useEffect(() => {
+    focusSourceRegion();
+  }, [focusSourceRegion, page]);
+
+  const onDocumentLoad = useCallback((pdf: PDFDocumentProxy, generation: number) => {
+    if (generation !== intakeGeneration.current) return;
     const loadedDocumentId = `pdf:${pdf.fingerprints[0] ?? "unknown"}`;
     setPageCount(pdf.numPages);
     setPage(1);
     setDocumentId(loadedDocumentId);
     setAnchor(captureSourceAnchor({ documentId: loadedDocumentId, page: 1 }));
+    turnGate.current.replaceSession(loadedDocumentId);
+    setTurnPending(false);
     setError(null);
   }, []);
+
+  const selectPdf = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const selected = input.files?.[0] ?? null;
+    intakeGeneration.current += 1;
+    const generation = intakeGeneration.current;
+    const loadingSession = selected ? `local:loading:${generation}` : "local:unloaded";
+    turnGate.current.replaceSession(loadingSession);
+    setTurnPending(false);
+    setFile(null);
+    setFileGeneration(0);
+    setPage(1);
+    setPageCount(0);
+    setDocumentId(loadingSession);
+    setAnnotations(createAnnotationState());
+    setMessages([]);
+    setAnchor(null);
+    setFocusedSource(null);
+    setError(null);
+    if (!selected) return;
+
+    const validation = await validatePdfFile(selected);
+    if (generation !== intakeGeneration.current) return;
+    if (!validation.ok) {
+      input.value = "";
+      setDocumentId("local:unloaded");
+      turnGate.current.replaceSession("local:unloaded");
+      setError(validation.message);
+      return;
+    }
+    input.value = "";
+    setFileGeneration(generation);
+    setFile(selected);
+  };
 
   const captureSelection = useCallback((event: MouseEvent<HTMLElement>) => {
     if (!file || pageCount === 0) return;
@@ -115,6 +184,7 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
       selectedText: selection.toString(),
       rects: normalizedSelectionRects(range, pageElement),
     }));
+    setFocusedSource(null);
   }, [documentId, file, page, pageCount]);
 
   const addCurrentHighlight = () => {
@@ -153,39 +223,56 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
   const sendQuestion = async (event: FormEvent) => {
     event.preventDefault();
     const text = question.trim();
-    if (!file || pageCount === 0 || !text) return;
+    if (!file || pageCount === 0 || !text || turnGate.current.isPending()) return;
     const source = anchor ?? captureSourceAnchor({ documentId, page });
-    setMessages((current) => [...current, { id: nextId("learner"), role: "learner", text, source }]);
-    setQuestion("");
     try {
-      const response = await tutorCore.sendTurn({ question: text, source });
+      const result = await turnGate.current.send(tutorCore, { question: text, source }, () => {
+        setMessages((current) => [...current, { id: nextId("learner"), role: "learner", text, source }]);
+        setQuestion((current) => current.trim() === text ? "" : current);
+        setTurnPending(true);
+      });
+      if (result.status !== "accepted") return;
+      const response = result.response;
+      const responseTarget = restoreSourceNavigation(response.source, documentId, pageCount);
+      if (!responseTarget) {
+        setError("The tutor returned a source location outside the active PDF.");
+      }
       setMessages((current) => [...current, {
         id: nextId("tutor"),
         role: "tutor",
         text: response.message,
-        source: response.source,
+        ...(responseTarget ? { source: responseTarget.anchor } : {}),
       }]);
       setContext(response.context);
     } catch (reason) {
       setError(String(reason));
+    } finally {
+      setTurnPending(turnGate.current.isPending());
     }
   };
 
   const navigateTo = (source: SourceAnchor) => {
-    const target = restoreSourceNavigation(source);
+    const target = restoreSourceNavigation(source, documentId, pageCount);
+    if (!target) {
+      setError("This source location is not valid for the active PDF.");
+      return;
+    }
     setPage(target.page);
     setAnchor(target.anchor);
+    setFocusedSource(target.anchor.accuracy === "exact" ? target.anchor : null);
     setActivePane("document");
+    setError(null);
   };
 
   const moveDocumentPage = (delta: number) => {
     const target = moveToAdjacentPage({ current: page, total: pageCount }, delta, documentId);
     setPage(target.page);
     setAnchor(target.anchor);
+    setFocusedSource(null);
   };
 
   const visibleHighlightRects = annotations.highlights
-    .filter((highlight) => highlight.anchor.page === page)
+    .filter((highlight) => highlight.anchor.documentId === documentId && highlight.anchor.page === page)
     .flatMap((highlight) => (highlight.anchor.rects ?? []).map((rect, index) => ({
       key: `${highlight.id}-${index}`,
       rect,
@@ -204,16 +291,7 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
             data-testid="pdf-file"
             type="file"
             accept="application/pdf,.pdf"
-            onChange={(event) => {
-              const selected = event.target.files?.[0] ?? null;
-              setFile(selected);
-              setPageCount(0);
-              setDocumentId(selected ? "local:loading" : "local:unloaded");
-              setAnnotations(createAnnotationState());
-              setMessages([]);
-              setAnchor(null);
-              setError(null);
-            }}
+            onChange={selectPdf}
           />
         </label>
       </header>
@@ -248,14 +326,21 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
             <button data-testid="add-highlight" disabled={anchor?.kind !== "selection"} onClick={addCurrentHighlight}>Highlight selection</button>
           </div>
 
+          {focusedSource ? (
+            <p className="source-jump-status" role="status" data-testid="source-jump-status">
+              Focused source location on page {focusedSource.page}.
+            </p>
+          ) : null}
+
           <div className="reader" ref={setReaderElement} onMouseUp={captureSelection}>
             {file ? (
               <Document
+                key={fileGeneration}
                 file={file}
                 suspense={false}
                 loading={<p className="reader-message" role="status">Loading PDF…</p>}
                 error={<p className="reader-message" role="alert">This PDF could not be rendered.</p>}
-                onLoadSuccess={onDocumentLoad}
+                onLoadSuccess={(pdf) => onDocumentLoad(pdf, fileGeneration)}
                 onLoadError={(reason) => setError(`PDF load failed: ${reason.message}`)}
               >
                 <div className="pdf-page-shell">
@@ -265,11 +350,31 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
                     renderAnnotationLayer={false}
                     renderTextLayer
                     loading={<p className="reader-message" role="status">Rendering page…</p>}
+                    onRenderSuccess={focusSourceRegion}
                   />
                   <div className="saved-highlight-layer" aria-hidden="true">
                     {visibleHighlightRects.map(({ key, rect }) => (
                       <span
                         key={key}
+                        style={{
+                          left: `${rect.x * 100}%`,
+                          top: `${rect.y * 100}%`,
+                          width: `${rect.width * 100}%`,
+                          height: `${rect.height * 100}%`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <div className="source-focus-layer">
+                    {sourceLocatorRects(focusedSource).map((rect, index) => (
+                      <span
+                        key={`source-focus-${index}`}
+                        ref={index === 0 ? sourceTarget : undefined}
+                        data-testid={index === 0 ? "source-jump-target" : undefined}
+                        tabIndex={index === 0 ? -1 : undefined}
+                        role={index === 0 ? "region" : undefined}
+                        aria-label={index === 0 ? `Focused source location on page ${page}` : undefined}
+                        aria-hidden={index === 0 ? undefined : true}
                         style={{
                           left: `${rect.x * 100}%`,
                           top: `${rect.y * 100}%`,
@@ -377,7 +482,7 @@ export function StudyWorkspaceApp({ tutorCore }: StudyWorkspaceAppProps) {
             {anchor ? <span className="source-chip">Using {sourceLabel(anchor)}</span> : null}
             <label htmlFor="tutor-question">Question for the mock tutor</label>
             <textarea id="tutor-question" data-testid="tutor-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask about the current source context" />
-            <button data-testid="send-question" type="submit" disabled={pageCount === 0 || !question.trim()}>Send to MockTutorCore</button>
+            <button data-testid="send-question" type="submit" disabled={pageCount === 0 || !question.trim() || turnPending}>{turnPending ? "Waiting for MockTutorCore…" : "Send to MockTutorCore"}</button>
           </form>
         </aside>
       </div>

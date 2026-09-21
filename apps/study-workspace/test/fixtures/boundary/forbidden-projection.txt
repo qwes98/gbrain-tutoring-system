@@ -1,0 +1,1 @@
+const projection = await import("../../../../../src/projection.ts");
