@@ -48,7 +48,7 @@ gbrain-tutor next "$TOPIC" --request-id next-1 --at 2026-01-01T00:00:00Z
 gbrain-tutor receipt get "$TOPIC" --request-id next-1
 ```
 
-See [CLI reference](docs/cli.md), [architecture and event model](docs/architecture.md), [GBrain boundary](docs/gbrain-integration.md), and the [design-only PDF study workspace requirements](docs/study-workspace/README.md).
+See [CLI reference](docs/cli.md), [learning model and storage boundaries](docs/learning-model.md), [architecture and event model](docs/architecture.md), [GBrain boundary](docs/gbrain-integration.md), the [Bun runtime ADR](docs/adr/0001-use-bun-runtime.md), and the [design-only PDF study workspace requirements](docs/study-workspace/README.md).
 
 ## Verification
 
