@@ -3,7 +3,7 @@ import { extname, join, relative } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const included = new Set([".ts", ".json", ".md"]);
-const ignored = new Set(["node_modules", "dist", ".git", ".omx"]);
+const ignored = new Set(["node_modules", "dist", ".git", ".omx", ".omc"]);
 const failures: string[] = [];
 
 function visit(directory: string): void {

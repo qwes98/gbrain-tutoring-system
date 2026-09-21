@@ -2,9 +2,16 @@
 
 A deterministic, offline tutoring ledger with append-only events, replayable projections, an inspectable rule policy, a Bun CLI, and a personal-installable Hermes skill. v0.2 adds an app-facing headless contract: versioned schemas and public types, query commands that never require parsing internal projection files, retry-safe commands with durable receipts, structured PDF identity and source anchors, a separate study-state plane, and a deterministic bounded context packet. GBrain integration stops at an explicit promotion-candidate file; this project never mutates GBrain automatically.
 
-## Install
+## Requirements
 
-Requires Linux with procfs and Bun 1.3 or newer. Storage mutations fail closed when descriptor-anchored procfs paths are unavailable.
+- Linux with procfs. Storage mutations fail closed when descriptor-anchored procfs paths are unavailable.
+- [Bun](https://bun.sh/) 1.3 or newer for installing, building, testing, and running the CLI.
+- Bash for `scripts/smoke.sh`.
+- `strace` for the ledger durability test.
+- `git`, `npm`, and `tar` for the full test and package-verification workflow.
+- Python 3 only for the optional real Hermes integration test; `python3` is the default executable.
+
+## Install
 
 ```bash
 bun install
@@ -48,7 +55,7 @@ gbrain-tutor next "$TOPIC" --request-id next-1 --at 2026-01-01T00:00:00Z
 gbrain-tutor receipt get "$TOPIC" --request-id next-1
 ```
 
-See [CLI reference](docs/cli.md), [learning model and storage boundaries](docs/learning-model.md), [architecture and event model](docs/architecture.md), [GBrain boundary](docs/gbrain-integration.md), the [Bun runtime ADR](docs/adr/0001-use-bun-runtime.md), and the [design-only PDF study workspace requirements](docs/study-workspace/README.md).
+See [CONTRIBUTING](CONTRIBUTING.md), the [CLI reference](docs/cli.md), [learning model and storage boundaries](docs/learning-model.md), [architecture and event model](docs/architecture.md), [GBrain boundary](docs/gbrain-integration.md), the [Bun runtime ADR](docs/adr/0001-use-bun-runtime.md), and the [design-only PDF study workspace requirements](docs/study-workspace/README.md).
 
 ## Verification
 
@@ -60,5 +67,13 @@ bun run build
 bun run doctor
 bun run smoke
 ```
+
+The Hermes integration case is skipped when `HERMES_AGENT_PYTHONPATH` is unset. Run it against a real Hermes checkout with:
+
+```bash
+HERMES_AGENT_PYTHONPATH=/path/to/hermes-agent bun test test/hermes-skill.test.ts
+```
+
+Set `HERMES_AGENT_PYTHON` to override the default `python3` executable when needed.
 
 The v0.1 acceptance test drives the CLI against `test/fixtures/concurrency-lecture.md` and exercises initialization, source capture, attempts and evidence, policy selection, generation-consistent projection rebuild, review scheduling, and promotion export. The v0.2 acceptance test in `test/headless-pdf-v0.2.acceptance.test.ts` drives the CLI against `test/fixtures/headless-study.pdf` for PDF registration, chapter progress and resume, independent highlights and comments across every anchor class, a confusion candidate that leaves concept state unchanged, retry-safe commands and receipts, context packet determinism, qualifying evidence, projection rebuild from an empty derived-state directory, due review completion, changed-source detection, and a non-mutating GBrain export. The Hermes test installs the complete skill into an isolated personal home, loads it through Hermes, and drives the real CLI through a historical review workflow.

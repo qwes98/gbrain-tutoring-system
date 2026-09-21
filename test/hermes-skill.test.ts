@@ -1,7 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+
+const hermesAgentPythonPath = process.env.HERMES_AGENT_PYTHONPATH;
+const hermesIntegrationTest = hermesAgentPythonPath ? test : test.skip;
+
+function hermesPythonExecutable(override: string | undefined): string {
+  return override || "python3";
+}
+
+function hermesPythonPath(hermesPath: string | undefined, existingPath: string | undefined): string {
+  return [hermesPath, existingPath]
+    .filter((path): path is string => Boolean(path))
+    .join(delimiter);
+}
+
+const hermesAgentPython = hermesPythonExecutable(process.env.HERMES_AGENT_PYTHON);
+const hermesLoaderPythonPath = hermesPythonPath(hermesAgentPythonPath, process.env.PYTHONPATH);
 
 describe("Hermes tutoring skill", () => {
   const roots: string[] = [];
@@ -20,7 +36,17 @@ describe("Hermes tutoring skill", () => {
     expect(content).toContain("## Verification");
   });
 
-  test("an installed skill loads through Hermes and schedules a historical decision at the turn time", async () => {
+  test("keeps the existing Python path after the Hermes checkout path", () => {
+    expect(hermesPythonPath("/checkout/hermes-agent", "/existing/python-modules"))
+      .toBe(`/checkout/hermes-agent${delimiter}/existing/python-modules`);
+  });
+
+  test("uses python3 by default and honors the Hermes Python executable override", () => {
+    expect(hermesPythonExecutable(undefined)).toBe("python3");
+    expect(hermesPythonExecutable("/opt/hermes-python")).toBe("/opt/hermes-python");
+  });
+
+  hermesIntegrationTest("an installed skill loads through Hermes and schedules a historical decision at the turn time", async () => {
     const root = mkdtempSync(join(tmpdir(), "gbrain-hermes-installed-"));
     roots.push(root);
     const hermesHome = join(root, "hermes-home");
@@ -29,7 +55,7 @@ describe("Hermes tutoring skill", () => {
     cpSync(join(import.meta.dir, "..", "skills", "gbrain-tutor"), installedSkill, { recursive: true });
 
     const loader = Bun.spawn([
-      "python3",
+      hermesAgentPython,
       "-c",
       [
         "import json",
@@ -41,7 +67,7 @@ describe("Hermes tutoring skill", () => {
       env: {
         ...process.env,
         HERMES_HOME: hermesHome,
-        PYTHONPATH: "/opt/hermes-agent",
+        PYTHONPATH: hermesLoaderPythonPath,
       },
       stdout: "pipe",
       stderr: "pipe",
