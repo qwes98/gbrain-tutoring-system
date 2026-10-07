@@ -1,0 +1,51 @@
+{
+  "name": "gbrain-tutoring-system",
+  "version": "0.2.0",
+  "description": "A deterministic, offline tutoring ledger and rule-based tutor CLI for GBrain workflows.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qwes98/gbrain-tutoring-system.git"
+  },
+  "homepage": "https://github.com/qwes98/gbrain-tutoring-system#readme",
+  "bugs": {
+    "url": "https://github.com/qwes98/gbrain-tutoring-system/issues"
+  },
+  "files": [
+    "src/*.ts",
+    "schemas/*.schema.json",
+    "templates/*.json",
+    "skills/gbrain-tutor/SKILL.md",
+    "skills/gbrain-tutor/references/ledger-contract.md",
+    "scripts/smoke.sh",
+    "test/fixtures/concurrency-lecture.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "workspaces": [
+    "apps/*"
+  ],
+  "bin": {
+    "gbrain-tutor": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test test apps/study-workspace/test",
+    "typecheck": "tsc --noEmit && bun run --cwd apps/study-workspace typecheck",
+    "lint": "bun run scripts/lint.ts",
+    "build": "bun run build:core && bun run --cwd apps/study-workspace build",
+    "build:core": "bun build src/cli.ts --target=bun --outdir=dist",
+    "doctor": "bun src/cli.ts doctor",
+    "smoke": "bash scripts/smoke.sh",
+    "study:dev": "bun run --cwd apps/study-workspace dev",
+    "study:preview": "bun run --cwd apps/study-workspace preview"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}
